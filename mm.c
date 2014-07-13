@@ -1,9 +1,12 @@
 /*
  * mm.c
  * hbovik - Harry Bovik
+ * Author:    Ming Fang
+ * Mail  :    mingf@andrew.cmu.edu
+ * Update:    07/13/2014
  *
- * NOTE TO STUDENTS: Replace this header comment with your own header
- * comment that gives a full description of your solution.
+ * This first version is implemented using implict list
+ * 
  */
 
 #include <assert.h>
