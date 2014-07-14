@@ -207,12 +207,14 @@ static void *extend_heap(unsigned int words) {
     if ((long)(block = mem_sbrk(words * WSIZE)) == -1)
         return NULL;
 
-    set_size(block, words - 4);
+    block--;   // back step 1 since the last one is the epi block
+    set_size(block, words - 2);
     block_mark(block, FREE);
 
-    // New eqilogue block
+    // New eqilogue block    
     set_size(block_next(block), 0);
-    block_mark(block_next(block), ALLOCATED);
+    (block_next(block))[0] |= 0x40000000;
+    //block_mark(block_next(block), ALLOCATED);
 
     return coalesce(block);    // Coalesce if necessary
  }
@@ -223,7 +225,7 @@ static void *extend_heap(unsigned int words) {
  *         NULL on no matching.
  */
 static void *find_fit(unsigned int awords) {
-    REQUIRES(awords > 2);
+    REQUIRES(awords >= 2);
 
     uint32_t *block;
     
@@ -239,7 +241,7 @@ static void *find_fit(unsigned int awords) {
  * Return: Nothing
  */
 static void place(void *block, unsigned int awords) {
-    REQUIRES(awords > 2);
+    REQUIRES(awords >= 2);
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
 
@@ -270,11 +272,13 @@ int mm_init(void) {
 
     if ((heap_listp = mem_sbrk(4*WSIZE)) == (void *)-1)
         return -1;
-    set_size(heap_listp, 0);                 // Prologue header of 0 size
-    set_size(heap_listp + 2, 0);             // Epilogue footer of 0 size
-    block_mark(heap_listp, ALLOCATED);       // Mark prologue as allocated
-    block_mark(heap_listp + 2, ALLOCATED);   // Mark epilogue as allocated
-    //heap_listp += 2;                            
+    set_size(heap_listp, 0);                 // Allignment padding
+    set_size(heap_listp + 1, 0);             // Pro of 0 size
+    set_size(heap_listp + 3, 0);             // Epi of 0 size
+    (heap_listp + 3)[0] |= 0x40000000;
+    block_mark(heap_listp + 1, ALLOCATED);   // Mark prologue as allocated
+
+    heap_listp += 3;                            
     
     /* Extend the empty heap with a free block of CHUNKSIZE bytes */
     if (extend_heap(CHUNKSIZE) == NULL)
@@ -320,7 +324,10 @@ void *malloc (size_t size) {
  * free
  */
 void free (void *ptr) {
-    REQUIRES(ptr != NULL);
+    /* If ptr is NULL, no operation is performed. */    
+    if (ptr == NULL)
+        return;
+
     uint32_t* block = (uint32_t*)(ptr) - 1;
 
     block_mark(block, FREE);
@@ -348,21 +355,21 @@ void *calloc (size_t nmemb, size_t size) {
 // Returns 0 if no errors were found, otherwise returns the error
 int mm_checkheap(int verbose) {
     verbose = verbose;
-    uint32_t *block;
+    uint32_t *block = heap_listp - 2;
     
-    for (block = heap_listp; block_size(block) > 0; block = block_next(block)) {
-        //Check prologue blocks.
-        if (block_size(block) == 0) {
-            if(block_free(block)) {
-                if (verbose)
-                    printf("Pro block should not be free\n");
-                return -1;
-            }
-            continue;
-        }
+    //Check prologue blocks.
+    if (block_size(block) == 0) {
+        if(block_free(block)) {
+            if (verbose)
+                printf("Pro block should not be free, header = %x\n", block[0]);
+            return -1;
+        }        
+    }
+
+    for (block = heap_listp; block_size(block) > 0; block = block_next(block)) {        
 
         //Check each block’s address alignment.
-        if (align(block, 8) != block) {
+        if (align(block + 1, 8) != block + 1) {
             if (verbose)
                 printf("Block address alignment error\n");
             return -1;
@@ -387,7 +394,9 @@ int mm_checkheap(int verbose) {
         }
         if (words % 2 != 0) {
             if (verbose)
-                printf("Block size is not a multiples of 8 bytes\n");
+                printf("Header %x, size %d is not a multiples of 8 bytes\n",
+                      block[0],
+                      words);
             return -1;
         }
 
