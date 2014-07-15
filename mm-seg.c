@@ -598,16 +598,54 @@ void free (void *ptr) {
  * realloc - you may want to look at mm-naive.c
  */
 void *realloc(void *oldptr, size_t size) {
-    if (oldptr == NULL)
+    if (oldptr == NULL)   // if oldptr is NULL, this works as malloc(size)
         return malloc(size);
-    if (size == 0) {
+    if (size == 0) {      // if size is 0, this works as free(oldptr)
         free(oldptr);
         return NULL;
     }
     REQUIRES(in_heap(oldptr));
     REQUIRES(!block_free(oldptr));
 
-    
+    unsigned int words = block_size(oldptr);  // old size in words
+    unsigned int nwords;                      // new size in words
+    uint32_t * ptr;                           // temp ptr
+
+    /* Adjust size to include alignment and convert to multipes of 4 bytes */
+    if (size <= DSIZE)
+        nwords = 2;
+    else
+        nwords = (((size) + (DSIZE-1)) & ~0x7) / WSIZE;
+
+    /* if new size is the same as old size or the old size is larger but no larger
+     * than 4 words, return oldptr without spliting */
+    if (nwords == words || words - nwords < 4)   
+        return oldptr;
+    else if (nwords < words) {
+        /* if old size is at least 4 words larger than new size
+         * return oldptr with spliting */      
+        set_size(oldptr, nwords);
+        block_mark(oldptr, ALLOCATED);
+        ptr = block_next(oldptr);
+        set_size(ptr, words - nwords - 2);
+        block_mark(ptr, FREE);
+        block_insert(ptr);
+        return oldptr;
+    } else {
+        /* if new size is smaller than old size, look for more space */
+        ptr = block_next(oldptr);
+        unsigned int owords = block_size(ptr);        
+        if (nwords - words <= owords + 2) {
+            set_size(oldptr, nwords);
+            block_mark(oldptr, ALLOCATED);
+            ptr = block_next(oldptr);
+            set_size(block, words - nwords - 2);
+            block_mark(block, FREE);
+            block_insert(block);
+        }
+    }
+
+
 }
 
 /*
