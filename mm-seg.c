@@ -5,7 +5,8 @@
  * Mail  :    mingf@andrew.cmu.edu
  * Update:    07/13/2014
  *
- * This first version is implemented using implict list
+ * This version is implemented using segregated list
+ * LIFO order to maintain each free list.
  * 
  */
 
@@ -50,14 +51,16 @@
 #endif
 
 /* Basic constants */
-#define WSIZE      4      /* Word and header/footer size (bytes) */
-#define DSIZE      8      /* Double word size (bytes) */
-#define CHUNKSIZE (1<<10) /* Extend heap by this amount (words) */
-#define FREE       0      /* Mark block as free */
-#define ALLOCATED  1      /* Mark block as allocated */
+#define WSIZE         4      /* Word and header/footer size (bytes) */
+#define DSIZE         8      /* Double word size (bytes) */
+#define CHUNKSIZE    (1<<10) /* Extend heap by this (1K words, 4K bytes) */
+#define FREE          0      /* Mark block as free */
+#define ALLOCATED     1      /* Mark block as allocated */
+#define SEG_LIST_SIZE 14     /* The seg list has 14 entries */
 
 /* Private global variable */
 static uint32_t *heap_listp;
+static uint32_t *seg_list[SEG_LIST_SIZE];
 
 /*
  *  Helper functions
@@ -124,6 +127,37 @@ static inline uint32_t* block_mem(uint32_t* const block) {
     return block + 1;
 }
 
+// Return the header to the predecessor free block
+static inline uint32_t* block_pred(uint32_t* const block) {
+    REQUIRES(block != NULL);
+    REQUIRES(in_heap(block));
+
+    unsigned int address = (unsigned int)heap_listp + block[1];
+
+    ENSURES((uint32_t *)address != NULL);
+    ENSURES(in_heap((uint32_t *)address));
+    if ((uint32_t *)address == heap_listp)
+        return NULL;
+    else 
+        return (uint32_t *)address;
+}
+
+// Return the header to the successor free block
+static inline uint32_t* block_succ(uint32_t* const block) {
+    REQUIRES(block != NULL);
+    REQUIRES(in_heap(block));
+
+    unsigned int address = (unsigned int)heap_listp + block[2];
+
+    ENSURES((uint32_t *)address != NULL);
+    ENSURES(in_heap((uint32_t *)address));
+
+    if ((uint32_t *)address == heap_listp)
+        return NULL;
+    else 
+        return (uint32_t *)address;
+}
+
 // Return the header to the previous block
 static inline uint32_t* block_prev(uint32_t* const block) {
     REQUIRES(block != NULL);
@@ -140,13 +174,131 @@ static inline uint32_t* block_next(uint32_t* const block) {
     return block + block_size(block) + 2;
 }
 
-// Set the size of the given block in multiples of 4 bytes
-static inline void set_size(uint32_t* const block, unsigned int words) {
+// Set given value to the given block 
+static inline void set_val(uint32_t* const block, unsigned int val) {
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
 
-    (*(unsigned int *)(block) = words);
+    (*(unsigned int *)(block) = val);
 }
+
+// Set the size of the given block in multiples of 4 bytes
+static inline void set_val(uint32_t* const block, unsigned int size) {
+    REQUIRES(block != NULL);
+    REQUIRES(in_heap(block));
+
+    set_val(block, size);
+}
+
+/*
+ * Set the pred and succ of the given free block
+ * Since the whole memory space is 2^32 bytes
+ * I can compress the 8 bytes address into 4 bytes
+ * by computing its offest to heap_listp
+ */
+static inline void set_ptr(uint32_t* const block, 
+                          uint32_t* const pred_block, 
+                          uint32_t* const succ_block) {
+    REQUIRES(block != NULL);
+    REQUIRES(in_heap(block));
+
+    unsigned int pred_offest 
+    unsigned int succ_offest
+
+    if (pred_block == NULL)
+        pred_offest = 0;
+    else 
+        pred_offest = (unsigned int)pred_block 
+                               - (unsigned int)heap_listp;
+
+    if (succ_block == NULL)
+        succ_offest = 0;
+    else
+        succ_offest = (unsigned int)succ_block 
+                               - (unsigned int)heap_listp;   
+
+    set_val(block + 1 , pred_offest);
+    set_val(block + 2 , succ_offest);    
+}
+
+
+// Return the index to the segregated list according to given words size
+static inline int find_index(unsigned int words) {
+    REQUIRES(words % 2 == 0);
+
+    if (words == 2) 
+        return 0;
+    else if (words == 4)
+        return 1;
+    else if(words >= 6 && words <= 8)
+        return 2; 
+    else if(words >= 10 && words <= 16)
+        return 3;     
+    else if(words >= 18 && words <= 32)
+        return 4;
+    else if(words >= 34 && words <= 64)
+        return 5;
+    else if(words >= 66 && words <= 128)
+        return 6;
+    else if(words >= 130 && words <= 256)
+        return 7;
+    else if(words >= 258 && words <= 512)
+        return 8;
+    else if(words >= 514 && words <= 1024)
+        return 9;
+    else if(words >= 1026 && words <= 2048)
+        return 10;
+    else if(words >= 2050 && words <= 4096)
+        return 11;
+    else if(words >= 4098 && words <= 8192)
+        return 12;
+    else
+        return 13;
+}
+
+// Insert the given free block into seg list according to its size
+static inline void block_insert(uint32_t* block) {
+    REQUIRES(block != NULL);
+    REQUIRES(in_heap(block));
+
+    int index = find_index(block_size(block));
+    uint32_t *old_block = seg_list[index];
+
+    if (old_block == NULL) { // this list is empty
+        set_ptr(block, NULL, NULL);
+        seg_list[index] = block;
+    } else {                 // this list is not empty
+        ENSURES(block_pred(old_block) == NULL);
+        ENSURES(in_heap(block_succ(old_block)));
+
+        set_ptr(old_block, block, block_succ(old_block));
+        set_ptr(block, NULL, old_block);
+    }
+}
+
+// Delete the given block from the seg list
+static inline void block_delete(uint32_t* block) {
+    REQUIRES(block != NULL);
+    REQUIRES(in_heap(block));
+
+
+    uint32_t *pred = block_pred(block);
+    uint32_t *succ = block_succ(block);
+    int index = find_index(block_size(block));
+
+    if (pred == NULL && succ == NULL) 
+        seg_list[index] = NULL;
+    else if (pred == NULL && succ != NULL) {
+        set_ptr(succ, NULL, block_succ(succ));
+        seg_list[index] = succ;
+    } else if (pred != NULL && succ == NULL) {
+        set_ptr(pred, block_pred(pred), NULL);
+    } else {
+        set_ptr(pred, block_pred(pred), succ);
+        set_ptr(succ, pred, block_succ(succ));
+    }
+}
+
 
 /*
  * Merge block with adjacent free blocks
@@ -159,35 +311,47 @@ static void *coalesce(void *block) {
     int prev_free = block_free(block_prev(block));
     int next_free = block_free(block_next(block));
     unsigned int words = block_size(block);
+    int index;
 
     if (prev_free && next_free) {       // Case 4, both free
         uint32_t *prev_block = block_prev(block);
         uint32_t *next_block = block_next(block);
+        block_delete(prev_block);
+        block_delete(next_block);
 
         words += block_size(prev_block) + block_size(next_block) + 4;
         set_size(prev_block, words);
         block_mark(prev_block, FREE);
         block = (void *)prev_block;
+
+        block_insert(block);
     }
 
     else if (!prev_free && next_free) { // Case 2, next if free
         uint32_t *next_block = block_next(block);
+        block_delete(next_block);
 
         words += block_size(next_block) + 2;
         set_size(block, words);
-        block_mark(block, FREE);        
+        block_mark(block, FREE);  
+
+        block_insert(block);      
     }
 
     else if (prev_free && !next_free) { // Case 3, prev is free
         uint32_t *prev_block = block_prev(block);
+        block_delete(prev_block);
 
         words += block_size(prev_block) + 2;
         set_size(prev_block, words);
         block_mark(prev_block, FREE);
         block = (void *)prev_block;
+
+        block_insert(block);
     }
 
     else {                              // Case 1, both unfree
+        block_insert(block);
         return block;
     }
     return block;
@@ -202,13 +366,15 @@ static void *extend_heap(unsigned int words) {
     REQUIRES(words > 4);
 
     uint32_t *block;
+    int index;
     
-    words = (words % 2) ? (words + 1) : words;
+    /* Ask for 2 more words for header and footer */
+    words = (words % 2) ? (words + 3) : words + 2;
     if ((long)(block = mem_sbrk(words * WSIZE)) == -1)
         return NULL;
 
-    block--;   // back step 1 since the last one is the epi block
-    set_size(block, words - 2);
+    block--;          // back step 1 since the last one is the epi block
+    set_size(block, words);
     block_mark(block, FREE);
 
     // New eqilogue block    
@@ -226,13 +392,19 @@ static void *extend_heap(unsigned int words) {
  */
 static void *find_fit(unsigned int awords) {
     REQUIRES(awords >= 2);
+    REQUIRES(awords % 2 == 0);
 
     uint32_t *block;
-    
-    for (block = heap_listp; block_size(block) > 0; block = block_next(block)) {
-        if (block_free(block) && block_size(block) >= awords)
-            return block;
-    }    
+    int index = find_index(awords);
+
+    for (int i = index; i < SEG_LIST_SIZE; ++i) {        
+        if (seg_list[i] == NULL)
+            continue;
+        for (block = seg_list[i]; block != NULL; block = block_succ(block)) {
+            if (block_size(block) >= awords)
+                return block;
+        }
+    }
     return NULL;
  }
 
@@ -241,11 +413,12 @@ static void *find_fit(unsigned int awords) {
  * Return: Nothing
  */
 static void place(void *block, unsigned int awords) {
-    REQUIRES(awords >= 2);
+    REQUIRES(awords >= 2 && awords % 2 == 0);
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
 
     unsigned int cwords = block_size(block);
+    block_delete(block);      // delete block from the seg list
 
     if ((cwords - awords) >= 4) {
         set_size(block, awords);
@@ -253,6 +426,7 @@ static void place(void *block, unsigned int awords) {
         block = block_next(block);
         set_size(block, cwords - awords - 2);
         block_mark(block, FREE);
+        block_insert(block);
     } else {
         set_size(block, cwords);
         block_mark(block, ALLOCATED);
@@ -270,6 +444,11 @@ static void place(void *block, unsigned int awords) {
  */
 int mm_init(void) {
 
+    /* Initialize the seg_list with NULL */
+    for (int i = 0; i < SEG_LIST_SIZE; ++i) {
+        seg_list[i] = NULL;
+    }
+
     if ((heap_listp = mem_sbrk(4*WSIZE)) == (void *)-1)
         return -1;
     set_size(heap_listp, 0);                 // Allignment padding
@@ -281,7 +460,7 @@ int mm_init(void) {
     heap_listp += 3;                            
     
     /* Extend the empty heap with a free block of CHUNKSIZE bytes */
-    if (extend_heap(CHUNKSIZE) == NULL)
+    if (extend_heap(CHUNKSIZE - 2) == NULL)
         return -1;
     return 0;
 }
@@ -313,7 +492,7 @@ void *malloc (size_t size) {
     }
 
     /* No fit found. Get more memory and place the block */ 
-    ewords = awords > CHUNKSIZE ? awords : CHUNKSIZE;
+    ewords = awords > CHUNKSIZE ? awords : CHUNKSIZE - 2;
     if ((block = extend_heap(ewords)) == NULL)
             return NULL;
     place(block, awords);
