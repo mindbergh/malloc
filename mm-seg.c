@@ -53,7 +53,7 @@
 /* Basic constants */
 #define WSIZE         4      /* Word and header/footer size (bytes) */
 #define DSIZE         8      /* Double word size (bytes) */
-#define CHUNKSIZE    (1<<10) /* Extend heap by this (1K words, 4K bytes) */
+#define CHUNKSIZE     1022   /* Extend heap by this (1K words, 4K bytes) */
 #define FREE          0      /* Mark block as free */
 #define ALLOCATED     1      /* Mark block as allocated */
 #define SEG_LIST_SIZE 14     /* The seg list has 14 entries */
@@ -61,6 +61,25 @@
 /* Private global variable */
 static uint32_t *heap_listp;
 static uint32_t *seg_list[SEG_LIST_SIZE];
+
+/*    Segregated List 
+ * Size(DWORD)    Entry
+ * 1                0
+ * 2                1
+ * 3-4              2
+ * 5-8              3
+ * 9-16             4
+ * 17-32            5
+ * 33-64            6
+ * 65-128           7
+ * 129-256          8
+ * 257-512          9
+ * 513-1024         10
+ * 1025-2048        11
+ * 2049-4096        12
+ * 4097-Inf         13
+ */
+
 
 /*
  *  Helper functions
@@ -81,6 +100,7 @@ static inline int aligned(const void const* p) {
 static int in_heap(const void* p) {
     return p <= mem_heap_hi() && p >= mem_heap_lo();
 }
+
 
 
 /*
@@ -132,14 +152,15 @@ static inline uint32_t* block_pred(uint32_t* const block) {
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
 
-    unsigned int address = (unsigned int)heap_listp + block[1];
+    uint32_t * address = heap_listp + block[1];
 
-    ENSURES((uint32_t *)address != NULL);
-    ENSURES(in_heap((uint32_t *)address));
-    if ((uint32_t *)address == heap_listp)
+    ENSURES(address != NULL);
+    ENSURES(in_heap(address));
+
+    if (address == heap_listp)
         return NULL;
     else 
-        return (uint32_t *)address;
+        return address;
 }
 
 // Return the header to the successor free block
@@ -147,15 +168,15 @@ static inline uint32_t* block_succ(uint32_t* const block) {
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
 
-    unsigned int address = (unsigned int)heap_listp + block[2];
+    uint32_t * address = heap_listp + block[2];
 
-    ENSURES((uint32_t *)address != NULL);
-    ENSURES(in_heap((uint32_t *)address));
+    ENSURES(address != NULL);
+    ENSURES(in_heap(address));
 
-    if ((uint32_t *)address == heap_listp)
+    if (address == heap_listp)
         return NULL;
     else 
-        return (uint32_t *)address;
+        return address;
 }
 
 // Return the header to the previous block
@@ -183,7 +204,7 @@ static inline void set_val(uint32_t* const block, unsigned int val) {
 }
 
 // Set the size of the given block in multiples of 4 bytes
-static inline void set_val(uint32_t* const block, unsigned int size) {
+static inline void set_size(uint32_t* const block, unsigned int size) {
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
 
@@ -202,23 +223,24 @@ static inline void set_ptr(uint32_t* const block,
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
 
-    unsigned int pred_offest 
-    unsigned int succ_offest
+    unsigned int pred_offest; 
+    unsigned int succ_offest;
 
     if (pred_block == NULL)
         pred_offest = 0;
     else 
-        pred_offest = (unsigned int)pred_block 
-                               - (unsigned int)heap_listp;
+        pred_offest = pred_block - heap_listp;
 
     if (succ_block == NULL)
         succ_offest = 0;
     else
-        succ_offest = (unsigned int)succ_block 
-                               - (unsigned int)heap_listp;   
+        succ_offest = succ_block - heap_listp;
 
+    //printf("pred_off = %d, succ_off = %d\n", pred_offest, succ_offest);
     set_val(block + 1 , pred_offest);
-    set_val(block + 2 , succ_offest);    
+    set_val(block + 2 , succ_offest);
+    ENSURES(block_pred(block) == pred_block);
+    ENSURES(block_succ(block) == succ_block);    
 }
 
 
@@ -256,12 +278,34 @@ static inline int find_index(unsigned int words) {
         return 13;
 }
 
+// Return whether the pointer is in the seg list.
+static int in_list(uint32_t* block) {
+    uint32_t *pred = block_pred(block);
+    uint32_t *succ = block_succ(block);
+    int index = find_index(block_size(block));
+
+    if (pred == NULL && succ == NULL) { 
+        // The list has only one block
+        return seg_list[index] == block;
+    } else if (pred == NULL && succ != NULL) {
+        // This block is at the head, seg_list[index] == block
+        return seg_list[index] == block && block_pred(succ) == block;
+    } else if (pred != NULL && succ == NULL) {
+        // This block is at the tail
+        return block_succ(pred) == block;
+    } else {
+        // This block is the middle of somewhere
+        return block_succ(pred) == block && block_pred(succ) == block;
+    }
+}
+
 // Insert the given free block into seg list according to its size
 static inline void block_insert(uint32_t* block) {
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
 
     int index = find_index(block_size(block));
+    //printf("index = %d, size = %d\n", index, block_size(block));
     uint32_t *old_block = seg_list[index];
 
     if (old_block == NULL) { // this list is empty
@@ -269,11 +313,13 @@ static inline void block_insert(uint32_t* block) {
         seg_list[index] = block;
     } else {                 // this list is not empty
         ENSURES(block_pred(old_block) == NULL);
-        ENSURES(in_heap(block_succ(old_block)));
+        ENSURES(block_succ(old_block) == NULL || in_heap(block_succ(old_block)));
 
         set_ptr(old_block, block, block_succ(old_block));
         set_ptr(block, NULL, old_block);
+        seg_list[index] = block;
     }
+    ENSURES(in_list(block));
 }
 
 // Delete the given block from the seg list
@@ -286,18 +332,26 @@ static inline void block_delete(uint32_t* block) {
     uint32_t *succ = block_succ(block);
     int index = find_index(block_size(block));
 
-    if (pred == NULL && succ == NULL) 
+    if (pred == NULL && succ == NULL) { 
+        // The list has only one block
         seg_list[index] = NULL;
-    else if (pred == NULL && succ != NULL) {
+    } else if (pred == NULL && succ != NULL) {
+        // This block is at the head, seg_list[index] == block
         set_ptr(succ, NULL, block_succ(succ));
         seg_list[index] = succ;
     } else if (pred != NULL && succ == NULL) {
+        // This block is at the tail
         set_ptr(pred, block_pred(pred), NULL);
     } else {
+        // This block is the middle of somewhere
         set_ptr(pred, block_pred(pred), succ);
         set_ptr(succ, pred, block_succ(succ));
     }
 }
+
+
+
+
 
 
 /*
@@ -308,14 +362,15 @@ static void *coalesce(void *block) {
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
 
-    int prev_free = block_free(block_prev(block));
-    int next_free = block_free(block_next(block));
+    uint32_t *prev_block = block_prev(block);
+    uint32_t *next_block = block_next(block);
+    int prev_free = block_free(prev_block);
+    int next_free = block_free(next_block);
     unsigned int words = block_size(block);
-    int index;
+    
 
     if (prev_free && next_free) {       // Case 4, both free
-        uint32_t *prev_block = block_prev(block);
-        uint32_t *next_block = block_next(block);
+
         block_delete(prev_block);
         block_delete(next_block);
 
@@ -325,21 +380,22 @@ static void *coalesce(void *block) {
         block = (void *)prev_block;
 
         block_insert(block);
+        ENSURES(in_list(block));    
     }
 
     else if (!prev_free && next_free) { // Case 2, next if free
-        uint32_t *next_block = block_next(block);
+
         block_delete(next_block);
 
         words += block_size(next_block) + 2;
         set_size(block, words);
         block_mark(block, FREE);  
 
-        block_insert(block);      
+        block_insert(block);
+        ENSURES(in_list(block));      
     }
 
     else if (prev_free && !next_free) { // Case 3, prev is free
-        uint32_t *prev_block = block_prev(block);
         block_delete(prev_block);
 
         words += block_size(prev_block) + 2;
@@ -348,10 +404,12 @@ static void *coalesce(void *block) {
         block = (void *)prev_block;
 
         block_insert(block);
+        ENSURES(in_list(block));
     }
 
     else {                              // Case 1, both unfree
         block_insert(block);
+        ENSURES(in_list(block));
         return block;
     }
     return block;
@@ -366,23 +424,31 @@ static void *extend_heap(unsigned int words) {
     REQUIRES(words > 4);
 
     uint32_t *block;
-    int index;
+    uint32_t *next;
     
+
     /* Ask for 2 more words for header and footer */
     words = (words % 2) ? (words + 3) : words + 2;
+    //printf("Words = %d bytes\n", words);
     if ((long)(block = mem_sbrk(words * WSIZE)) == -1)
         return NULL;
 
     block--;          // back step 1 since the last one is the epi block
-    set_size(block, words);
+    set_size(block, words - 2);
     block_mark(block, FREE);
 
-    // New eqilogue block    
-    set_size(block_next(block), 0);
-    (block_next(block))[0] |= 0x40000000;
+    ENSURES(block != NULL);
+    // New eqilogue block
+    next = block_next(block);    
+    set_size(next, 0);
+    *next |= 0x40000000;
     //block_mark(block_next(block), ALLOCATED);
 
-    return coalesce(block);    // Coalesce if necessary
+    ENSURES(!block_free(next));
+    ENSURES(block_size(next) == 0);
+    block = coalesce(block);    // Coalesce if necessary
+    ENSURES(in_list(block));
+    return block;
  }
 
 /*
@@ -416,9 +482,12 @@ static void place(void *block, unsigned int awords) {
     REQUIRES(awords >= 2 && awords % 2 == 0);
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
+    REQUIRES(in_list(block));
 
     unsigned int cwords = block_size(block);
     block_delete(block);      // delete block from the seg list
+    
+    ENSURES(!in_list(block));
 
     if ((cwords - awords) >= 4) {
         set_size(block, awords);
@@ -427,6 +496,8 @@ static void place(void *block, unsigned int awords) {
         set_size(block, cwords - awords - 2);
         block_mark(block, FREE);
         block_insert(block);
+
+        ENSURES(in_list(block));
     } else {
         set_size(block, cwords);
         block_mark(block, ALLOCATED);
@@ -454,12 +525,13 @@ int mm_init(void) {
     set_size(heap_listp, 0);                 // Allignment padding
     set_size(heap_listp + 1, 0);             // Pro of 0 size
     set_size(heap_listp + 3, 0);             // Epi of 0 size
-    (heap_listp + 3)[0] |= 0x40000000;
+    (heap_listp + 3)[0] |= 0x40000000;       // Mark epi as allocated
     block_mark(heap_listp + 1, ALLOCATED);   // Mark prologue as allocated
 
-    heap_listp += 3;                            
+    heap_listp += 1;                            
     
-    /* Extend the empty heap with a free block of CHUNKSIZE bytes */
+    /* Extend the empty heap with a free block of CHUNKSIZE bytes 
+     * extend_heap would ask for 2 more words */
     if (extend_heap(CHUNKSIZE - 2) == NULL)
         return -1;
     return 0;
@@ -476,6 +548,8 @@ void *malloc (size_t size) {
     unsigned int ewords;  //Amount to extend heap if no matching
     uint32_t *block;
 
+    //printf("Malloc %d bytes\n", size);
+
     /* Ignore 0 requests */
     if (size == 0)
         return NULL;
@@ -485,6 +559,8 @@ void *malloc (size_t size) {
     else
         awords = (((size) + (DSIZE-1)) & ~0x7) / WSIZE;
 
+
+
     /* Search the free list for a fit */
     if ((block = find_fit(awords)) != NULL) {
         place(block, awords);
@@ -492,7 +568,12 @@ void *malloc (size_t size) {
     }
 
     /* No fit found. Get more memory and place the block */ 
-    ewords = awords > CHUNKSIZE ? awords : CHUNKSIZE - 2;
+    ewords = awords > CHUNKSIZE ? awords : CHUNKSIZE;
+    if (awords > CHUNKSIZE)
+        ewords = awords;
+    else
+        ewords = CHUNKSIZE;
+    //printf("Ewords = %d bytes\n", ewords);
     if ((block = extend_heap(ewords)) == NULL)
             return NULL;
     place(block, awords);
@@ -517,9 +598,16 @@ void free (void *ptr) {
  * realloc - you may want to look at mm-naive.c
  */
 void *realloc(void *oldptr, size_t size) {
-    oldptr = oldptr;
-    size = size;
-    return NULL;
+    if (oldptr == NULL)
+        return malloc(size);
+    if (size == 0) {
+        free(oldptr);
+        return NULL;
+    }
+    REQUIRES(in_heap(oldptr));
+    REQUIRES(!block_free(oldptr));
+
+    
 }
 
 /*
@@ -534,19 +622,25 @@ void *calloc (size_t nmemb, size_t size) {
 // Returns 0 if no errors were found, otherwise returns the error
 int mm_checkheap(int verbose) {
     verbose = verbose;
-    uint32_t *block = heap_listp - 2;
+    uint32_t *block = heap_listp;
+    int count_iter = 0;
+    int count_list = 0;
     
     //Check prologue blocks.
-    if (block_size(block) == 0) {
-        if(block_free(block)) {
-            if (verbose)
-                printf("Pro block should not be free, header = %x\n", block[0]);
-            return -1;
-        }        
+    if (block_size(block) != 0) {
+        if (verbose)
+            printf("Pro block should be zero size, header = %x\n", block[0]);
+        return -1;         
     }
 
-    for (block = heap_listp; block_size(block) > 0; block = block_next(block)) {        
+    if(block_free(block)) {
+        if (verbose)
+            printf("Pro block should not be free, header = %x\n", block[0]);
+        return -1;
+    }       
 
+    for (block = heap_listp + 2; block_size(block) > 0; block = block_next(block)) {
+        //printf("header = %x %d\n", block[0], block[0]);
         //Check each block’s address alignment.
         if (align(block + 1, 8) != block + 1) {
             if (verbose)
@@ -588,18 +682,82 @@ int mm_checkheap(int verbose) {
 
         //Check coalescing: no two consecutive free blocks in the heap.
         if (block_free(block)) {
+            count_iter++;
+            if (!in_list(block)) {
+                if (verbose)
+                    printf("This free block is in heap but not in list, size = %d\n",
+                           block_size(block));
+            }
+
+
+
             if (block_free(block_prev(block)) || block_free(block_next(block))) {
                 if (verbose)
                     printf("There should be no consecutive free blocks\n");
                 return -1;
             }
         }
-    }    
+    }
 
     if (block_free(block)) {
         if (verbose)
             printf("Epi block should not be free\n");
         return -1;
+    }
+
+    for (int i = 0; i < SEG_LIST_SIZE; ++i) {        
+        if (seg_list[i] == NULL)
+            continue;
+
+        for (block = seg_list[i]; block != NULL; block = block_succ(block)) {
+            count_list++;
+            
+            /*All next/previous pointers are consistent 
+             * (if A’s next pointer points to B, B’s previous pointer
+             * should point to A). */
+            uint32_t *pred = block_pred(block);
+            uint32_t *succ = block_succ(block);
+            if (pred != NULL) {
+                if (block != block_succ(pred)) {
+                    if (verbose)
+                        printf("List pointer is not consistent\n");
+                    return -1;
+                }
+            }
+
+            if (succ != NULL) {
+                if (block != block_pred(succ)) {
+                    if (verbose)
+                        printf("List pointer is not consistent\n");
+                    return -1;
+                }
+            }
+
+            //All free list pointers points between mem heap lo() and hi()
+            if (!in_heap(block)) {
+                if (verbose)
+                    printf("Block isn't in heap\n");
+                return -1;
+            }
+
+            //All blocks in each list bucket fall within bucket size range
+            if (find_index(block_size(block)) != i) {
+                if (verbose)
+                    printf("Blocks size should fall within bucket size range\n");
+                return -1;                    
+            }            
+        }
+    }
+
+    /* Count free blocks by iterating through every block and 
+     * traversing free list by pointers and see if they match. */
+    //dbg_printf("Number of free blocks should be the same, "
+                   //"iter = %d, list = %d;\n", count_iter, count_list);
+    if (count_list != count_iter) {
+        if (verbose)
+            printf("Number of free blocks should be the same, "
+                   "iter = %d, list = %d;\n", count_iter, count_list);
+        return -1;                    
     }
 
     return 0;

@@ -2,3 +2,4 @@
 *.do
 *.debug
 *.fast
+mm.c
