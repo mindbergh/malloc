@@ -60,7 +60,7 @@
 
 /* Private global variable */
 static uint32_t *heap_listp;
-static uint32_t *seg_list[SEG_LIST_SIZE];
+static uint32_t **seg_list;
 
 /*    Segregated List 
  * Size(DWORD)    Entry
@@ -527,11 +527,13 @@ static void place(void *block, unsigned int awords) {
 int mm_init(void) {
 
     /* Initialize the seg_list with NULL */
+    seg_list = mem_sbrk(SEG_LIST_SIZE * sizeof(uint32_t *));
     for (int i = 0; i < SEG_LIST_SIZE; ++i) {
+        //printf("%d",i);
         seg_list[i] = NULL;
     }
 
-    if ((heap_listp = mem_sbrk(4*WSIZE)) == (void *)-1)
+    if ((heap_listp = mem_sbrk(4 * WSIZE)) == (void *)-1)
         return -1;
     set_size(heap_listp, 0);                 // Allignment padding
     set_size(heap_listp + 1, 0);             // Pro of 0 size
