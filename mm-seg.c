@@ -147,6 +147,15 @@ static inline uint32_t* block_mem(uint32_t* const block) {
     return block + 1;
 }
 
+// Return a pointer to block of what malloc returns
+static inline uint32_t* block_block(uint32_t* const ptr) {
+    REQUIRES(ptr != NULL);
+    REQUIRES(in_heap(ptr - 1));
+    REQUIRES(aligned(ptr));
+
+    return ptr - 1;
+}
+
 // Return the header to the predecessor free block
 static inline uint32_t* block_pred(uint32_t* const block) {
     REQUIRES(block != NULL);
@@ -207,6 +216,8 @@ static inline void set_val(uint32_t* const block, unsigned int val) {
 static inline void set_size(uint32_t* const block, unsigned int size) {
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
+    REQUIRES(size % 2 == 0);
+
 
     set_val(block, size);
 }
@@ -588,7 +599,7 @@ void free (void *ptr) {
     if (ptr == NULL)
         return;
 
-    uint32_t* block = (uint32_t*)(ptr) - 1;
+    uint32_t* block = block_block(ptr);
 
     block_mark(block, FREE);
     coalesce(block);
@@ -604,10 +615,15 @@ void *realloc(void *oldptr, size_t size) {
         free(oldptr);
         return NULL;
     }
-    REQUIRES(in_heap(oldptr));
-    REQUIRES(!block_free(oldptr));
 
-    unsigned int words = block_size(oldptr);  // old size in words
+    uint32_t *block = block_block(oldptr);
+
+    REQUIRES(in_heap(block));
+    REQUIRES(!block_free(block));
+
+
+
+    unsigned int words = block_size(block);  // old size in words
     unsigned int nwords;                      // new size in words
     uint32_t * ptr;                           // temp ptr
 
@@ -619,14 +635,16 @@ void *realloc(void *oldptr, size_t size) {
 
     /* if new size is the same as old size or the old size is larger but no larger
      * than 4 words, return oldptr without spliting */
+    //printf("RE, words = %d, nwords = %d\n", words, nwords);
     if (nwords == words || (words > nwords && words - nwords < 4))
         return oldptr;
     else if (nwords < words) {
         /* if old size is at least 4 words larger than new size
          * return oldptr with spliting */      
-        set_size(oldptr, nwords);
-        block_mark(oldptr, ALLOCATED);
-        ptr = block_next(oldptr);
+        set_size(block, nwords);
+        block_mark(block, ALLOCATED);
+        ptr = block_next(block);
+        ENSURES(words - nwords - 2 < words);
         set_size(ptr, words - nwords - 2);
         block_mark(ptr, FREE);
         block_insert(ptr);
@@ -634,7 +652,7 @@ void *realloc(void *oldptr, size_t size) {
     } else {
         /* if old size is smaller than new size, look for more space */
 
-        ptr = block_next(oldptr);
+        ptr = block_next(block);
         if (block_free(ptr)) {
             ENSURES(in_list(ptr));
 
@@ -644,18 +662,18 @@ void *realloc(void *oldptr, size_t size) {
             if (remain >= 4) {
                 // the next free block is enough large to split
                 block_delete(ptr);
-                set_size(oldptr, nwords);
-                block_mark(oldptr, ALLOCATED);
-                ptr = block_next(oldptr);
-                set_size(ptr, remain - 2);
+                set_size(block, nwords);
+                block_mark(block, ALLOCATED);
+                ptr = block_next(block);
+                set_size(ptr, owords - (nwords - words));
                 block_mark(ptr, FREE);
                 block_insert(ptr);
                 return oldptr;
             } else if (remain >= 0) {
                 // the next free block can not split
                 block_delete(ptr);
-                set_size(oldptr, words + owords + 2);
-                block_mark(oldptr, ALLOCATED);
+                set_size(block, words + owords + 2);
+                block_mark(block, ALLOCATED);
                 return oldptr;
             }
         } 
@@ -663,7 +681,7 @@ void *realloc(void *oldptr, size_t size) {
          * next block is not free, malloc whole new one. */
         ptr = malloc(size);
         /* Copy the old data. */
-        memcpy(ptr, oldptr, block_size(oldptr) * WSIZE);
+        memcpy(ptr, oldptr, block_size(block) * WSIZE);
         /* Free the old block. */
         free(oldptr);
         return ptr;
