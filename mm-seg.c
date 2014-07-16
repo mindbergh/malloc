@@ -619,7 +619,7 @@ void *realloc(void *oldptr, size_t size) {
 
     /* if new size is the same as old size or the old size is larger but no larger
      * than 4 words, return oldptr without spliting */
-    if (nwords == words || words - nwords < 4)   
+    if (nwords == words || (words > nwords && words - nwords < 4))
         return oldptr;
     else if (nwords < words) {
         /* if old size is at least 4 words larger than new size
@@ -632,29 +632,56 @@ void *realloc(void *oldptr, size_t size) {
         block_insert(ptr);
         return oldptr;
     } else {
-        /* if new size is smaller than old size, look for more space */
+        /* if old size is smaller than new size, look for more space */
+
         ptr = block_next(oldptr);
-        unsigned int owords = block_size(ptr);        
-        if (nwords - words <= owords + 2) {
-            set_size(oldptr, nwords);
-            block_mark(oldptr, ALLOCATED);
-            ptr = block_next(oldptr);
-            set_size(block, words - nwords - 2);
-            block_mark(block, FREE);
-            block_insert(block);
-        }
+        if (block_free(ptr)) {
+            ENSURES(in_list(ptr));
+
+            // if next block is free
+            unsigned int owords = block_size(ptr);  //size of next blockdd
+            int remain = owords + 2 - (nwords - words);
+            if (remain >= 4) {
+                // the next free block is enough large to split
+                block_delete(ptr);
+                set_size(oldptr, nwords);
+                block_mark(oldptr, ALLOCATED);
+                ptr = block_next(oldptr);
+                set_size(ptr, remain - 2);
+                block_mark(ptr, FREE);
+                block_insert(ptr);
+                return oldptr;
+            } else if (remain >= 0) {
+                // the next free block can not split
+                block_delete(ptr);
+                set_size(oldptr, words + owords + 2);
+                block_mark(oldptr, ALLOCATED);
+                return oldptr;
+            }
+        } 
+        /* the next free block is too small, or
+         * next block is not free, malloc whole new one. */
+        ptr = malloc(size);
+        /* Copy the old data. */
+        memcpy(ptr, oldptr, block_size(oldptr) * WSIZE);
+        /* Free the old block. */
+        free(oldptr);
+        return ptr;
     }
-
-
 }
+
 
 /*
  * calloc - you may want to look at mm-naive.c
  */
 void *calloc (size_t nmemb, size_t size) {
-    nmemb = nmemb;
-    size = size;
-    return NULL;
+  size_t bytes = nmemb * size;
+  void *newptr;
+
+  newptr = malloc(bytes);
+  memset(newptr, 0, bytes);
+
+  return newptr;
 }
 
 // Returns 0 if no errors were found, otherwise returns the error
