@@ -6,7 +6,7 @@
  * Update:    07/13/2014
  *
  * This version is implemented using segregated list
- * LIFO order to maintain each free list.
+ * and address-ordered policy to maintain each free list.
  * 
  */
 
@@ -322,13 +322,32 @@ static inline void block_insert(uint32_t* block) {
     if (old_block == NULL) { // this list is empty
         set_ptr(block, NULL, NULL);
         seg_list[index] = block;
-    } else {                 // this list is not empty
-        ENSURES(block_pred(old_block) == NULL);
-        ENSURES(block_succ(old_block) == NULL || in_heap(block_succ(old_block)));
+    } else if (old_block > block) {                 // this list is not empty
+        ENSURES(block_pred(old_block) == NULL);     // and the first block in
+        ENSURES(block_succ(old_block) == NULL ||    // the list has larger 
+                in_heap(block_succ(old_block)));    // address.
 
         set_ptr(old_block, block, block_succ(old_block));
         set_ptr(block, NULL, old_block);
         seg_list[index] = block;
+    } else { 
+        // Find right place to insert block
+        uint32_t *succ = block_succ(old_block);
+        while (succ != NULL && old_block < block) {
+            old_block = succ;
+            succ = block_succ(old_block);
+        }
+        if (succ == NULL) {
+            // block has the largest address in the list, which means
+            // it should be inserted at the tail
+            set_ptr(old_block, block_pred(old_block), block);
+            set_ptr(block, old_block, NULL);
+        } else {
+            // block should be inserted into the middle of somewhere
+            set_ptr(old_block, block_pred(old_block), block);
+            set_ptr(block, old_block, succ);
+            set_ptr(succ, block, block_succ(succ));
+        }
     }
     ENSURES(in_list(block));
 }
