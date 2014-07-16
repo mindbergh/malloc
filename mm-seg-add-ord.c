@@ -53,14 +53,14 @@
 /* Basic constants */
 #define WSIZE         4      /* Word and header/footer size (bytes) */
 #define DSIZE         8      /* Double word size (bytes) */
-#define CHUNKSIZE     1022   /* Extend heap by this (1K words, 4K bytes) */
+#define CHUNKSIZE     126   /* Extend heap by this (1K words, 4K bytes) */
 #define FREE          0      /* Mark block as free */
 #define ALLOCATED     1      /* Mark block as allocated */
 #define SEG_LIST_SIZE 14     /* The seg list has 14 entries */
 
 /* Private global variable */
 static uint32_t *heap_listp;
-static uint32_t *seg_list[SEG_LIST_SIZE];
+static uint32_t **seg_list;
 
 /*    Segregated List 
  * Size(DWORD)    Entry
@@ -546,6 +546,7 @@ static void place(void *block, unsigned int awords) {
 int mm_init(void) {
 
     /* Initialize the seg_list with NULL */
+	seg_list = mem_sbrk(SEG_LIST_SIZE * sizeof(uint32_t *));
     for (int i = 0; i < SEG_LIST_SIZE; ++i) {
         seg_list[i] = NULL;
     }
