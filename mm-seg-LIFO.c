@@ -579,7 +579,7 @@ void *malloc (size_t size) {
     }
 
     /* No fit found. Get more memory and place the block */ 
-    ewords = awords > CHUNKSIZE ? awords : CHUNKSIZE;
+    //ewords = awords > CHUNKSIZE ? awords : CHUNKSIZE;
     if (awords > CHUNKSIZE)
         ewords = awords;
     else
