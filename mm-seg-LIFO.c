@@ -53,7 +53,7 @@
 /* Basic constants */
 #define WSIZE         4      /* Word and header/footer size (bytes) */
 #define DSIZE         8      /* Double word size (bytes) */
-#define CHUNKSIZE     1022   /* Extend heap by this (1K words, 4K bytes) */
+#define CHUNKSIZE     126  /* Extend heap by this (1K words, 4K bytes) */
 #define FREE          0      /* Mark block as free */
 #define ALLOCATED     1      /* Mark block as allocated */
 #define SEG_LIST_SIZE 14     /* The seg list has 14 entries */
