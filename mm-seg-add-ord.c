@@ -7,7 +7,9 @@
  *
  * This version is implemented using segregated list
  * and address-ordered policy to maintain each free list.
- * 
+ * The free list is implememted using double linked list
+ * Fit policy is first fit, which could be performed in constant time
+ * Insertion could be performed in O(n)
  */
 
 #include <assert.h>
@@ -53,14 +55,14 @@
 /* Basic constants */
 #define WSIZE         4      /* Word and header/footer size (bytes) */
 #define DSIZE         8      /* Double word size (bytes) */
-#define CHUNKSIZE     126   /* Extend heap by this (1K words, 4K bytes) */
+#define CHUNKSIZE     128   /* Extend heap by this (Unit: words, 4 bytes) */
 #define FREE          0      /* Mark block as free */
 #define ALLOCATED     1      /* Mark block as allocated */
 #define SEG_LIST_SIZE 14     /* The seg list has 14 entries */
 
 /* Private global variable */
-static uint32_t *heap_listp;
-static uint32_t **seg_list;
+static uint32_t *heap_listp;   // the prologue block
+static uint32_t **seg_list;    // Seg list entries
 
 /*    Segregated List 
  * Size(DWORD)    Entry
@@ -100,6 +102,9 @@ static inline int aligned(const void const* p) {
 static int in_heap(const void* p) {
     return p <= mem_heap_hi() && p >= mem_heap_lo();
 }
+
+
+
 
 
 
@@ -290,7 +295,7 @@ static inline int find_index(unsigned int words) {
 }
 
 // Return whether the pointer is in the seg list.
-static int in_list(uint32_t* block) {
+static inline int in_list(uint32_t* block) {
     uint32_t *pred = block_pred(block);
     uint32_t *succ = block_succ(block);
     int index = find_index(block_size(block));
@@ -380,7 +385,10 @@ static inline void block_delete(uint32_t* block) {
 }
 
 
-
+// Return the pointer to the last block in the heap.
+static inline uint32_t * last_block() {
+    return block_prev((uint32_t *)((char *)mem_heap_hi() - 3));
+}
 
 
 
@@ -458,7 +466,7 @@ static void *extend_heap(unsigned int words) {
     
 
     /* Ask for 2 more words for header and footer */
-    words = (words % 2) ? (words + 3) : words + 2;
+    words = (words % 2) ? (words + 1) : words;
     //printf("Words = %d bytes\n", words);
     if ((long)(block = mem_sbrk(words * WSIZE)) == -1)
         return NULL;
@@ -474,10 +482,14 @@ static void *extend_heap(unsigned int words) {
     *next |= 0x40000000;
     //block_mark(block_next(block), ALLOCATED);
 
+
+
     ENSURES(!block_free(next));
     ENSURES(block_size(next) == 0);
+    //printf("extended size = %u, ", block_size(block));
     block = coalesce(block);    // Coalesce if necessary
     ENSURES(in_list(block));
+    //printf("after col size = %u\n", block_size(block));
     return block;
  }
 
@@ -559,11 +571,14 @@ int mm_init(void) {
     (heap_listp + 3)[0] |= 0x40000000;       // Mark epi as allocated
     block_mark(heap_listp + 1, ALLOCATED);   // Mark prologue as allocated
 
-    heap_listp += 1;                            
+    heap_listp += 1;
+
+    //printf("listp = %p, last = %p\n", (void *)heap_listp, (void *)last_block());
+                       
     
     /* Extend the empty heap with a free block of CHUNKSIZE bytes 
-     * extend_heap would ask for 2 more words */
-    if (extend_heap(CHUNKSIZE - 2) == NULL)
+     * ask for 2 more words for header and footer */
+    if (extend_heap(CHUNKSIZE + 2) == NULL)
         return -1;
     return 0;
 }
@@ -578,6 +593,7 @@ void *malloc (size_t size) {
     unsigned int awords;  //Adjusted block size
     unsigned int ewords;  //Amount to extend heap if no matching
     uint32_t *block;
+    uint32_t * heap_lastp = last_block();
 
     //printf("Malloc %d bytes\n", size);
 
@@ -604,10 +620,20 @@ void *malloc (size_t size) {
         ewords = awords;
     else
         ewords = CHUNKSIZE;
+    if (block_free(heap_lastp)) {
+        ENSURES(block_size(heap_lastp) < ewords);
+        ewords = ewords - block_size(heap_lastp) + 2;
+        //ewords += 2;
+        //printf("mal ewords = %u, last = %u\n", ewords, block_size(heap_lastp));        
+    } else {
+        ewords += 2;
+        //printf("mal words = %u\n", ewords);  
+    }
     //printf("Ewords = %d bytes\n", ewords);
     if ((block = extend_heap(ewords)) == NULL)
             return NULL;
     place(block, awords);
+
     return block_mem(block);
 }
 
@@ -817,7 +843,8 @@ int mm_checkheap(int verbose) {
             
             /*All next/previous pointers are consistent 
              * (if A’s next pointer points to B, B’s previous pointer
-             * should point to A). */
+             * should point to A). 
+             * */
             uint32_t *pred = block_pred(block);
             uint32_t *succ = block_succ(block);
             if (pred != NULL) {
@@ -826,12 +853,24 @@ int mm_checkheap(int verbose) {
                         printf("List pointer is not consistent\n");
                     return -1;
                 }
+                /* Additional check: address ordering */
+                if (block < pred) {
+                    if (verbose)
+                        printf("pred should have smaller address \n");
+                    return -1;
+                }
             }
 
             if (succ != NULL) {
                 if (block != block_pred(succ)) {
                     if (verbose)
                         printf("List pointer is not consistent\n");
+                    return -1;
+                }
+                 /* Additional check: address ordering */
+                if (block > succ) {
+                    if (verbose)
+                        printf("succ should have larger address \n");
                     return -1;
                 }
             }

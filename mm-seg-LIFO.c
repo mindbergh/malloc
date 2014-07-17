@@ -53,7 +53,7 @@
 /* Basic constants */
 #define WSIZE         4      /* Word and header/footer size (bytes) */
 #define DSIZE         8      /* Double word size (bytes) */
-#define CHUNKSIZE     126  /* Extend heap by this (1K words, 4K bytes) */
+#define CHUNKSIZE     128  /* Extend heap by this (1K words, 4K bytes) */
 #define FREE          0      /* Mark block as free */
 #define ALLOCATED     1      /* Mark block as allocated */
 #define SEG_LIST_SIZE 14     /* The seg list has 14 entries */
@@ -362,7 +362,10 @@ static inline void block_delete(uint32_t* block) {
 
 
 
-
+// Return the pointer to the last block in the heap.
+static inline uint32_t * last_block() {
+    return block_prev((uint32_t *)((char *)mem_heap_hi() - 3));
+}
 
 
 /*
@@ -439,7 +442,7 @@ static void *extend_heap(unsigned int words) {
     
 
     /* Ask for 2 more words for header and footer */
-    words = (words % 2) ? (words + 3) : words + 2;
+    words = (words % 2) ? (words + 1) : words;
     //printf("Words = %d bytes\n", words);
     if ((long)(block = mem_sbrk(words * WSIZE)) == -1)
         return NULL;
@@ -545,7 +548,7 @@ int mm_init(void) {
     
     /* Extend the empty heap with a free block of CHUNKSIZE bytes 
      * extend_heap would ask for 2 more words */
-    if (extend_heap(CHUNKSIZE - 2) == NULL)
+    if (extend_heap(CHUNKSIZE + 2) == NULL)
         return -1;
     return 0;
 }
@@ -560,6 +563,7 @@ void *malloc (size_t size) {
     unsigned int awords;  //Adjusted block size
     unsigned int ewords;  //Amount to extend heap if no matching
     uint32_t *block;
+    uint32_t * heap_lastp = last_block();
 
     //printf("Malloc %d bytes\n", size);
 
@@ -581,12 +585,16 @@ void *malloc (size_t size) {
     }
 
     /* No fit found. Get more memory and place the block */ 
-    //ewords = awords > CHUNKSIZE ? awords : CHUNKSIZE;
     if (awords > CHUNKSIZE)
         ewords = awords;
     else
         ewords = CHUNKSIZE;
-    //printf("Ewords = %d bytes\n", ewords);
+    if (block_free(heap_lastp)) {
+        ENSURES(block_size(heap_lastp) < ewords);
+        ewords = ewords - block_size(heap_lastp) + 2;   
+    } else
+        ewords += 2;  // ask for 2 more for the header and footer
+
     if ((block = extend_heap(ewords)) == NULL)
             return NULL;
     place(block, awords);
