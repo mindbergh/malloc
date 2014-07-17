@@ -532,7 +532,6 @@ int mm_init(void) {
     /* Initialize the seg_list with NULL */
     seg_list = mem_sbrk(SEG_LIST_SIZE * sizeof(uint32_t *));
     for (int i = 0; i < SEG_LIST_SIZE; ++i) {
-        //printf("%d",i);
         seg_list[i] = NULL;
     }
 
@@ -591,7 +590,8 @@ void *malloc (size_t size) {
         ewords = CHUNKSIZE;
     if (block_free(heap_lastp)) {
         ENSURES(block_size(heap_lastp) < ewords);
-        ewords = ewords - block_size(heap_lastp) + 2;   
+        //ewords = ewords - block_size(heap_lastp) + 2;   
+        ewords += 2;
     } else
         ewords += 2;  // ask for 2 more for the header and footer
 
