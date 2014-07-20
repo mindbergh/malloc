@@ -3,3 +3,4 @@
 *.debug
 *.fast
 mm.c
+*.txt
