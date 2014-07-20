@@ -53,10 +53,11 @@
 /* Basic constants */
 #define WSIZE         4      /* Word and header/footer size (bytes) */
 #define DSIZE         8      /* Double word size (bytes) */
-#define CHUNKSIZE     128  /* Extend heap by this (1K words, 4K bytes) */
+#define CHUNKSIZE     128    /* Extend heap by this (1K words, 4K bytes) */
 #define FREE          0      /* Mark block as free */
 #define ALLOCATED     1      /* Mark block as allocated */
 #define SEG_LIST_SIZE 14     /* The seg list has 14 entries */
+#define VERBOSE       0      /* Indicator to print debug info */
 
 /* Private global variable */
 static uint32_t *heap_listp;
@@ -143,7 +144,8 @@ static inline uint32_t* block_mem(uint32_t* const block) {
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
     REQUIRES(aligned(block + 1));
-
+    if (VERBOSE)
+        printf("Heap size = %d bytes \n", (int)mem_heapsize());
     return block + 1;
 }
 
@@ -443,7 +445,8 @@ static void *extend_heap(unsigned int words) {
 
     /* Ask for 2 more words for header and footer */
     words = (words % 2) ? (words + 1) : words;
-    //printf("Words = %d bytes\n", words);
+    if (VERBOSE)
+        printf("Extend Words = %d bytes\n", words * 4);
     if ((long)(block = mem_sbrk(words * WSIZE)) == -1)
         return NULL;
 
@@ -477,7 +480,8 @@ static void *find_fit(unsigned int awords) {
     uint32_t *block;
     int index = find_index(awords);
 
-    for (int i = index; i < SEG_LIST_SIZE; ++i) {        
+    for (int i = index; i < SEG_LIST_SIZE; ++i) {
+        //printf("index in finding = %d\n", i);        
         if (seg_list[i] == NULL)
             continue;
         for (block = seg_list[i]; block != NULL; block = block_succ(block)) {
@@ -498,7 +502,7 @@ static void place(void *block, unsigned int awords) {
     REQUIRES(in_heap(block));
     REQUIRES(in_list(block));
 
-    unsigned int cwords = block_size(block);
+    unsigned int cwords = block_size(block); //the size of the given freeblock
     block_delete(block);      // delete block from the seg list
     
     ENSURES(!in_list(block));
@@ -564,7 +568,8 @@ void *malloc (size_t size) {
     uint32_t *block;
     uint32_t * heap_lastp = last_block();
 
-    //printf("Malloc %d bytes\n", size);
+    if (VERBOSE)
+        printf("Malloc %d bytes\n", (int)size);
 
     /* Ignore 0 requests */
     if (size == 0)
@@ -580,20 +585,26 @@ void *malloc (size_t size) {
     /* Search the free list for a fit */
     if ((block = find_fit(awords)) != NULL) {
         place(block, awords);
-        return block_mem(block);
+        //printf("3\n");
+        return block_mem(block);        
     }
 
     /* No fit found. Get more memory and place the block */ 
     if (awords > CHUNKSIZE)
         ewords = awords;
+    else if (0)
+        ewords = awords;
     else
         ewords = CHUNKSIZE;
     if (block_free(heap_lastp)) {
         ENSURES(block_size(heap_lastp) < ewords);
-        //ewords = ewords - block_size(heap_lastp) + 2;   
-        ewords += 2;
-    } else
+        ewords = ewords - block_size(heap_lastp) + 2;
+        //ewords += 2;
+        //printf("1\n");
+    } else {
         ewords += 2;  // ask for 2 more for the header and footer
+        //printf("2\n");
+    }
 
     if ((block = extend_heap(ewords)) == NULL)
             return NULL;
@@ -714,7 +725,7 @@ void *calloc (size_t nmemb, size_t size) {
 
 // Returns 0 if no errors were found, otherwise returns the error
 int mm_checkheap(int verbose) {
-    verbose = verbose;
+    
     uint32_t *block = heap_listp;
     int count_iter = 0;
     int count_list = 0;
@@ -847,6 +858,7 @@ int mm_checkheap(int verbose) {
     //dbg_printf("Number of free blocks should be the same, "
                    //"iter = %d, list = %d;\n", count_iter, count_list);
     if (count_list != count_iter) {
+    //if (1) { 
         if (verbose)
             printf("Number of free blocks should be the same, "
                    "iter = %d, list = %d;\n", count_iter, count_list);
