@@ -477,7 +477,11 @@ static void *find_fit(unsigned int awords) {
     REQUIRES(awords >= 2);
     REQUIRES(awords % 2 == 0);
 
-    uint32_t *block;
+    uint32_t *block = NULL;
+    uint32_t *res = block;
+    int found = 0;
+    unsigned int words = 1 << 31;
+    unsigned int thiswords = 0;
     int index = find_index(awords);
 
     for (int i = index; i < SEG_LIST_SIZE; ++i) {
@@ -485,11 +489,20 @@ static void *find_fit(unsigned int awords) {
         if (seg_list[i] == NULL)
             continue;
         for (block = seg_list[i]; block != NULL; block = block_succ(block)) {
-            if (block_size(block) >= awords)
-                return block;
+            thiswords = block_size(block);
+            if (thiswords >= awords) {
+                if (thiswords < words) {
+                    res = block;
+                    words = thiswords;
+                }
+                found = 1;
+                //return block;
+            }
         }
+        if (found) 
+            break;
     }
-    return NULL;
+    return res;
  }
 
 /*
