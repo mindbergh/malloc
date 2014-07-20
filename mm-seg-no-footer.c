@@ -7,6 +7,7 @@
  *
  * This version is implemented using segregated list
  * LIFO order to maintain each free list.
+ * No footer at allocated block
  * 
  */
 
@@ -129,14 +130,38 @@ static inline int block_free(const uint32_t* block) {
     return !(block[0] & 0x40000000);
 }
 
-// Mark the given block as free(1)/alloced(0) by marking the header and footer.
-static inline void block_mark(uint32_t* block, int free) {
+// Return true if the prev block is free, false otherwise
+static inline int block_prev_free(const uint32_t* block) {
+    REQUIRES(block != NULL);
+    REQUIRES(in_heap(block));
+
+    return !(block[0] & 0x80000000);
+}
+
+/* Mark the given block as free(1) by marking the header and footer.
+ * Addionally mark if the prev block is free or not
+ * Input: free is FREE      if the prev is free
+ *                ALLOCATED if the prev is allocated 
+ */
+static inline void block_mark_free(uint32_t* block, int free) {
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
     free = !free;
     unsigned int next = block_size(block) + 1;
-    block[0] = free ? block[0] & (int) 0xBFFFFFFF : block[0] | 0x40000000;
+    block[0] = free ? block[0] & (int) 0x3FFFFFFF : block[0] & (int) 0xBFFFFFFF;
     block[next] = block[0];
+}
+
+/* Mark the given block as alloced by marking only header
+ * Addionally mark if the prev block is free or not
+ * Input: free is FREE      if the prev is free
+ *                ALLOCATED if the prev is allocated 
+ */
+static inline void block_mark_allo(uint32_t* block, int free) {
+    REQUIRES(block != NULL);
+    REQUIRES(in_heap(block));
+    free = !free;
+    block[0] = free ? (block[0] | 0x40000000) & (int) 0x7FFFFFFF : block[0] | 0xC0000000;
 }
 
 // Return a pointer to the memory malloc should return
