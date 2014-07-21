@@ -403,11 +403,14 @@ static void *coalesce(void *block) {
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
 
-    uint32_t *prev_block = block_prev(block);
+    uint32_t *prev_block;
     uint32_t *next_block = block_next(block);
-    int prev_free = block_free(prev_block);
+    int prev_free = block_prev_free(block);
     int next_free = block_free(next_block);
     unsigned int words = block_size(block);
+
+    if (prev_free)
+        prev_block = block_prev(block);
     
 
     if (prev_free && next_free) {       // Case 4, both free
@@ -417,7 +420,7 @@ static void *coalesce(void *block) {
 
         words += block_size(prev_block) + block_size(next_block) + 4;
         set_size(prev_block, words);
-        block_mark(prev_block, FREE);
+        block_mark_free(prev_block, ALLOCATED);
         block = (void *)prev_block;
 
         block_insert(block);
@@ -430,7 +433,7 @@ static void *coalesce(void *block) {
 
         words += block_size(next_block) + 2;
         set_size(block, words);
-        block_mark(block, FREE);  
+        block_mark_free(block, ALLOCATED);  
 
         block_insert(block);
         ENSURES(in_list(block));      
@@ -441,7 +444,7 @@ static void *coalesce(void *block) {
 
         words += block_size(prev_block) + 2;
         set_size(prev_block, words);
-        block_mark(prev_block, FREE);
+        block_mark_free(prev_block, ALLOCATED);
         block = (void *)prev_block;
 
         block_insert(block);
@@ -477,14 +480,17 @@ static void *extend_heap(unsigned int words) {
 
     block--;          // back step 1 since the last one is the epi block
     set_size(block, words - 2);
-    block_mark(block, FREE);
+    if (block_prev_free(block))
+        block_mark_free(block, FREE);
+    else
+        block_mark_free(block, ALLOCATED);
 
     ENSURES(block != NULL);
     // New eqilogue block
-    next = block_next(block);    
+    next = block_next(block);
     set_size(next, 0);
-    *next |= 0x40000000;
-    //block_mark(block_next(block), ALLOCATED);
+    //*next |= 0x40000000;
+    block_mark_allo(next, FREE);
 
     ENSURES(!block_free(next));
     ENSURES(block_size(next) == 0);
@@ -534,16 +540,22 @@ static void place(void *block, unsigned int awords) {
 
     if ((cwords - awords) >= 4) {
         set_size(block, awords);
-        block_mark(block, ALLOCATED);
+
+        ENSURES(block_prev_free(block) == 0);
+        block_mark_allo(block, ALLOCATED);
+
         block = block_next(block);
         set_size(block, cwords - awords - 2);
-        block_mark(block, FREE);
+
+        block_mark_free(block, ALLOCATED);
+
         block_insert(block);
 
         ENSURES(in_list(block));
     } else {
         set_size(block, cwords);
-        block_mark(block, ALLOCATED);
+        ENSURES(block_prev_free(block) == 0);
+        block_mark_allo(block, ALLOCATED);
     }    
  }
 
@@ -564,19 +576,16 @@ int mm_init(void) {
         seg_list[i] = NULL;
     }
 
-    if ((heap_listp = mem_sbrk(4 * WSIZE)) == (void *)-1)
+    if ((heap_listp = mem_sbrk(2 * WSIZE)) == (void *)-1)
         return -1;
-    set_size(heap_listp, 0);                 // Allignment padding
-    set_size(heap_listp + 1, 0);             // Pro of 0 size
-    set_size(heap_listp + 3, 0);             // Epi of 0 size
-    (heap_listp + 3)[0] |= 0x40000000;       // Mark epi as allocated
-    block_mark(heap_listp + 1, ALLOCATED);   // Mark prologue as allocated
-
-    heap_listp += 1;                            
+    set_size(heap_listp, 0);             // Pro of 0 size
+    set_size(heap_listp + 1, 0);             // Epi of 0 size
+    block_mark_allo(heap_listp, ALLOCATED);   // Mark prologue as allocated
+    block_mark_allo(heap_listp + 1, ALLOCATED);   // Mark epilogue as allocated                            
     
     /* Extend the empty heap with a free block of CHUNKSIZE bytes 
      * extend_heap would ask for 2 more words */
-    if (extend_heap(CHUNKSIZE + 2) == NULL)
+    if (extend_heap(CHUNKSIZE + 1) == NULL)
         return -1;
     return 0;
 }
@@ -599,16 +608,18 @@ void *malloc (size_t size) {
     /* Ignore 0 requests */
     if (size == 0)
         return NULL;
-    /* Adjust size to include alignment and convert to multipes of 4 bytes */
-    if (size <= DSIZE)
-        awords = 2;
+    /* Adjust size to include alignment and convert to multipes of 4 bytes
+     * Recall that alloc block only has header, therefore the min size should be  
+     * 12, and then 20, 28.... */
+    if (size <= 12)
+        awords = 3;
     else
-        awords = (((size) + (DSIZE-1)) & ~0x7) / WSIZE;
+        awords = 3 + (((size - 12) + (DSIZE-1)) & ~0x7) / WSIZE;
 
 
 
     /* Search the free list for a fit */
-    if ((block = find_fit(awords)) != NULL) {
+    if ((block = find_fit(awords - 1)) != NULL) {
         place(block, awords);
         //printf("3\n");
         return block_mem(block);        
