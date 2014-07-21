@@ -54,9 +54,9 @@
 /* Basic constants */
 #define WSIZE         4      /* Word and header/footer size (bytes) */
 #define DSIZE         8      /* Double word size (bytes) */
-#define CHUNKSIZE     128    /* Extend heap by this (1K words, 4K bytes) */
-#define FREE          0      /* Mark block as free */
-#define ALLOCATED     1      /* Mark block as allocated */
+#define CHUNKSIZE     129    /* Extend heap by this (1K words, 4K bytes) */
+#define FREE          1      /* Mark prev block as free */
+#define ALLOCATED     0      /* Mark prev block as allocated */
 #define SEG_LIST_SIZE 14     /* The seg list has 14 entries */
 #define VERBOSE       0      /* Indicator to print debug info */
 
@@ -140,28 +140,26 @@ static inline int block_prev_free(const uint32_t* block) {
 
 /* Mark the given block as free(1) by marking the header and footer.
  * Addionally mark if the prev block is free or not
- * Input: free is FREE      if the prev is free
- *                ALLOCATED if the prev is allocated 
+ * Arguments: free is FREE      if the prev is free
+ *                    ALLOCATED if the prev is allocated 
  */
-static inline void block_mark_free(uint32_t* block, int free) {
+static inline void block_mark_free(uint32_t* block, int alloc) {
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
-    free = !free;
     unsigned int next = block_size(block) + 1;
-    block[0] = free ? block[0] & (int) 0x3FFFFFFF : block[0] & (int) 0xBFFFFFFF;
+    block[0] = alloc ? block[0] & (int) 0x3FFFFFFF : (block[0] | 0x80000000) & (int) 0xBFFFFFFF;
     block[next] = block[0];
 }
 
 /* Mark the given block as alloced by marking only header
  * Addionally mark if the prev block is free or not
- * Input: free is FREE      if the prev is free
- *                ALLOCATED if the prev is allocated 
+ * Arguments: free is FREE      if the prev is free
+ *                    ALLOCATED if the prev is allocated 
  */
-static inline void block_mark_allo(uint32_t* block, int free) {
+static inline void block_mark_allo(uint32_t* block, int alloc) {
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
-    free = !free;
-    block[0] = free ? (block[0] | 0x40000000) & (int) 0x7FFFFFFF : block[0] | 0xC0000000;
+    block[0] = alloc ? (block[0] | 0x40000000) & (int) 0x7FFFFFFF : block[0] | 0xC0000000;
 }
 
 // Return a pointer to the memory malloc should return
@@ -187,6 +185,7 @@ static inline uint32_t* block_block(uint32_t* const ptr) {
 static inline uint32_t* block_pred(uint32_t* const block) {
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
+    REQUIRES(block_size(block) >= 2);
 
     uint32_t * address = heap_listp + block[1];
 
@@ -203,6 +202,7 @@ static inline uint32_t* block_pred(uint32_t* const block) {
 static inline uint32_t* block_succ(uint32_t* const block) {
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
+    REQUIRES(block_size(block) >= 2);
 
     uint32_t * address = heap_listp + block[2];
 
@@ -219,6 +219,7 @@ static inline uint32_t* block_succ(uint32_t* const block) {
 static inline uint32_t* block_prev(uint32_t* const block) {
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
+    REQUIRES(block_prev_free(block));
 
     return block - block_size(block - 1) - 2;
 }
@@ -227,8 +228,10 @@ static inline uint32_t* block_prev(uint32_t* const block) {
 static inline uint32_t* block_next(uint32_t* const block) {
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
-
-    return block + block_size(block) + 2;
+    if (block_free(block))
+        return block + block_size(block) + 2;
+    else
+        return block + block_size(block) + 1;
 }
 
 // Set given value to the given block 
@@ -243,8 +246,6 @@ static inline void set_val(uint32_t* const block, unsigned int val) {
 static inline void set_size(uint32_t* const block, unsigned int size) {
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
-    REQUIRES(size % 2 == 0);
-
 
     set_val(block, size);
 }
@@ -284,7 +285,6 @@ static inline void set_ptr(uint32_t* const block,
 
 // Return the index to the segregated list according to given words size
 static inline int find_index(unsigned int words) {
-    REQUIRES(words % 2 == 0);
 
     if (words == 2) 
         return 0;
@@ -390,8 +390,8 @@ static inline void block_delete(uint32_t* block) {
 
 
 // Return the pointer to the last block in the heap.
-static inline uint32_t * last_block() {
-    return block_prev((uint32_t *)((char *)mem_heap_hi() - 3));
+static inline uint32_t * epi_block() {
+    return (uint32_t *)((char *)mem_heap_hi() - 3);
 }
 
 
@@ -403,7 +403,7 @@ static void *coalesce(void *block) {
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
 
-    uint32_t *prev_block;
+    uint32_t *prev_block = NULL;
     uint32_t *next_block = block_next(block);
     int prev_free = block_prev_free(block);
     int next_free = block_free(next_block);
@@ -411,6 +411,8 @@ static void *coalesce(void *block) {
 
     if (prev_free)
         prev_block = block_prev(block);
+    if (!block_free(block))
+        words -= 1;
     
 
     if (prev_free && next_free) {       // Case 4, both free
@@ -452,6 +454,8 @@ static void *coalesce(void *block) {
     }
 
     else {                              // Case 1, both unfree
+        set_size(block, words);
+        block_mark_free(block, ALLOCATED);
         block_insert(block);
         ENSURES(in_list(block));
         return block;
@@ -465,26 +469,29 @@ static void *coalesce(void *block) {
  *         NULL on error.
  */
 static void *extend_heap(unsigned int words) {
-    REQUIRES(words > 4);
-
+    //REQUIRES(words >= 3);
+    REQUIRES(words % 2 == 1);
     uint32_t *block;
     uint32_t *next;
     
-
-    /* Ask for 2 more words for header and footer */
-    words = (words % 2) ? (words + 1) : words;
+    words += 1;   //Ask 1 more for the header
     if (VERBOSE)
         printf("Extend Words = %d bytes\n", words * 4);
     if ((long)(block = mem_sbrk(words * WSIZE)) == -1)
         return NULL;
 
     block--;          // back step 1 since the last one is the epi block
-    set_size(block, words - 2);
-    if (block_prev_free(block))
+    
+    if (block_prev_free(block)) {
+        set_size(block, words - 2);
         block_mark_free(block, FREE);
-    else
+        ENSURES(block_prev_free(block));
+    }
+    else {
+        set_size(block, words - 2);
         block_mark_free(block, ALLOCATED);
-
+        ENSURES(!block_prev_free(block));
+    }
     ENSURES(block != NULL);
     // New eqilogue block
     next = block_next(block);
@@ -528,7 +535,7 @@ static void *find_fit(unsigned int awords) {
  * Return: Nothing
  */
 static void place(void *block, unsigned int awords) {
-    REQUIRES(awords >= 2 && awords % 2 == 0);
+
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
     REQUIRES(in_list(block));
@@ -538,14 +545,13 @@ static void place(void *block, unsigned int awords) {
     
     ENSURES(!in_list(block));
 
-    if ((cwords - awords) >= 4) {
-        set_size(block, awords);
-
-        ENSURES(block_prev_free(block) == 0);
+    if (cwords >= (awords + 3)) {
+        ENSURES(!block_prev_free(block));
+        set_size(block, awords);        
         block_mark_allo(block, ALLOCATED);
 
         block = block_next(block);
-        set_size(block, cwords - awords - 2);
+        set_size(block, cwords - awords - 1);
 
         block_mark_free(block, ALLOCATED);
 
@@ -553,8 +559,12 @@ static void place(void *block, unsigned int awords) {
 
         ENSURES(in_list(block));
     } else {
-        set_size(block, cwords);
         ENSURES(block_prev_free(block) == 0);
+        set_size(block, cwords + 1);
+        block_mark_allo(block, ALLOCATED);
+
+        block = block_next(block);
+        ENSURES(!block_free(block));
         block_mark_allo(block, ALLOCATED);
     }    
  }
@@ -581,11 +591,13 @@ int mm_init(void) {
     set_size(heap_listp, 0);             // Pro of 0 size
     set_size(heap_listp + 1, 0);             // Epi of 0 size
     block_mark_allo(heap_listp, ALLOCATED);   // Mark prologue as allocated
-    block_mark_allo(heap_listp + 1, ALLOCATED);   // Mark epilogue as allocated                            
+    block_mark_allo(heap_listp + 1, ALLOCATED);   // Mark epilogue as allocated
+    ENSURES(!block_prev_free(heap_listp));
+    ENSURES(!block_prev_free(heap_listp + 1));
     
-    /* Extend the empty heap with a free block of CHUNKSIZE bytes 
+    /* Extend the empty heap with a free block of CHUNKSIZE bytes
      * extend_heap would ask for 2 more words */
-    if (extend_heap(CHUNKSIZE + 1) == NULL)
+    if (extend_heap(CHUNKSIZE) == NULL)
         return -1;
     return 0;
 }
@@ -600,7 +612,7 @@ void *malloc (size_t size) {
     unsigned int awords;  //Adjusted block size
     unsigned int ewords;  //Amount to extend heap if no matching
     uint32_t *block;
-    uint32_t * heap_lastp = last_block();
+    uint32_t * epi = epi_block();
 
     if (VERBOSE)
         printf("Malloc %d bytes\n", (int)size);
@@ -616,7 +628,8 @@ void *malloc (size_t size) {
     else
         awords = 3 + (((size - 12) + (DSIZE-1)) & ~0x7) / WSIZE;
 
-
+    if (VERBOSE)
+        printf("Awords =  %d\n", awords);
 
     /* Search the free list for a fit */
     if ((block = find_fit(awords - 1)) != NULL) {
@@ -632,18 +645,22 @@ void *malloc (size_t size) {
         ewords = awords;
     else
         ewords = CHUNKSIZE;
-    if (block_free(heap_lastp)) {
-        ENSURES(block_size(heap_lastp) < ewords);
-        ewords = ewords - block_size(heap_lastp) + 2;
+
+    if (block_prev_free(epi)) {
+        unsigned int last_size = block_size(block_prev(epi));
+        if (VERBOSE)
+            printf("last size =  %d\n", last_size);
+        ENSURES(last_size + 1 < ewords);
+        ewords = ewords - last_size - 2;
         //ewords += 2;
         //printf("1\n");
-    } else {
-        ewords += 2;  // ask for 2 more for the header and footer
-        //printf("2\n");
     }
 
+    if (VERBOSE)
+        printf("Ewords =  %d\n", ewords);
+
     if ((block = extend_heap(ewords)) == NULL)
-            return NULL;
+        return NULL;
     place(block, awords);
     return block_mem(block);
 }
@@ -652,13 +669,16 @@ void *malloc (size_t size) {
  * free
  */
 void free (void *ptr) {
+    checkheap(1);  // Let's make sure the heap is ok!
     /* If ptr is NULL, no operation is performed. */    
     if (ptr == NULL)
         return;
 
-    uint32_t* block = block_block(ptr);
+    if (VERBOSE == 1)
+        printf("Free %p \n", ptr);
 
-    block_mark(block, FREE);
+    uint32_t* block = block_block(ptr);
+    (block_next(block))[0] &= (int) 0x7FFFFFFF;
     coalesce(block);
 }
 
@@ -666,12 +686,16 @@ void free (void *ptr) {
  * realloc - you may want to look at mm-naive.c
  */
 void *realloc(void *oldptr, size_t size) {
+    checkheap(1);  // Let's make sure the heap is ok!
     if (oldptr == NULL)   // if oldptr is NULL, this works as malloc(size)
         return malloc(size);
     if (size == 0) {      // if size is 0, this works as free(oldptr)
         free(oldptr);
         return NULL;
     }
+
+    if (VERBOSE)
+        printf("Realloc %d bytes\n", (int)size);
 
     uint32_t *block = block_block(oldptr);
 
@@ -685,52 +709,87 @@ void *realloc(void *oldptr, size_t size) {
     uint32_t * ptr;                           // temp ptr
 
     /* Adjust size to include alignment and convert to multipes of 4 bytes */
-    if (size <= DSIZE)
-        nwords = 2;
+    if (size <= 12)
+        nwords = 3;
     else
-        nwords = (((size) + (DSIZE-1)) & ~0x7) / WSIZE;
+        nwords = 3 + (((size - 12) + (DSIZE-1)) & ~0x7) / WSIZE;
 
     /* if new size is the same as old size or the old size is larger but no larger
      * than 4 words, return oldptr without spliting */
     //printf("RE, words = %d, nwords = %d\n", words, nwords);
     if (nwords == words || (words > nwords && words - nwords < 4))
         return oldptr;
-    else if (nwords < words) {
+    else if ((words > nwords && words - nwords >= 4)) {
         /* if old size is at least 4 words larger than new size
          * return oldptr with spliting */      
-        set_size(block, nwords);
-        block_mark(block, ALLOCATED);
+        
+        if (block_prev_free(block)) {
+            set_size(block, nwords);
+            block_mark_allo(block, FREE);        
+        } else {
+            set_size(block, nwords);
+            block_mark_allo(block, ALLOCATED);
+        }
+
         ptr = block_next(block);
         ENSURES(words - nwords - 2 < words);
         set_size(ptr, words - nwords - 2);
-        block_mark(ptr, FREE);
-        block_insert(ptr);
+        block_mark_free(ptr, ALLOCATED);
+
+        // if the next block is free, do coalescence
+        uint32_t *next = block_next(ptr);
+        if (block_free(next)) {
+            block_delete(next);
+            set_size(ptr, block_size(ptr) + block_size(next) + 2);
+            block_mark_free(ptr, ALLOCATED);
+            block_insert(ptr);
+        } else {
+            block_mark_allo(next, FREE);
+            block_insert(ptr);
+        }
         return oldptr;
     } else {
         /* if old size is smaller than new size, look for more space */
-
         ptr = block_next(block);
         if (block_free(ptr)) {
             ENSURES(in_list(ptr));
 
             // if next block is free
-            unsigned int owords = block_size(ptr);  //size of next blockdd
-            int remain = owords + 2 - (nwords - words);
-            if (remain >= 4) {
+            unsigned int owords = block_size(ptr);  //size of next block
+            int remain = owords + 1 - (nwords - words);
+            if (remain >= 3) {
                 // the next free block is enough large to split
                 block_delete(ptr);
-                set_size(block, nwords);
-                block_mark(block, ALLOCATED);
+                
+
+                if (block_prev_free(block)) {
+                    set_size(block, nwords);
+                    block_mark_allo(block, FREE);
+                } else {
+                    set_size(block, nwords);
+                    block_mark_allo(block, ALLOCATED);
+                }
                 ptr = block_next(block);
-                set_size(ptr, owords - (nwords - words));
-                block_mark(ptr, FREE);
+                set_size(ptr, remain - 1);
+                block_mark_free(ptr, ALLOCATED);
                 block_insert(ptr);
                 return oldptr;
             } else if (remain >= 0) {
                 // the next free block can not split
                 block_delete(ptr);
-                set_size(block, words + owords + 2);
-                block_mark(block, ALLOCATED);
+                
+
+                if (block_prev_free(block)) {
+                    set_size(block, words + owords + 2); 
+                    block_mark_allo(block, FREE);
+                } else {
+                    set_size(block, words + owords + 2);
+                    block_mark_allo(block, ALLOCATED);
+                }
+
+                ptr = block_next(block);
+                ENSURES(!block_free(ptr));
+                block_mark_allo(ptr, ALLOCATED);
                 return oldptr;
             }
         } 
@@ -779,7 +838,7 @@ int mm_checkheap(int verbose) {
         return -1;
     }       
 
-    for (block = heap_listp + 2; block_size(block) > 0; block = block_next(block)) {
+    for (block = heap_listp + 1; block_size(block) > 0; block = block_next(block)) {
         //printf("header = %x %d\n", block[0], block[0]);
         //Check each block’s address alignment.
         if (align(block + 1, 8) != block + 1) {
@@ -805,20 +864,21 @@ int mm_checkheap(int verbose) {
                 printf("Block size is less then 8 bytes\n");
             return -1;
         }
-        if (words % 2 != 0) {
+        if (!block_free(block) && words % 2 != 1) {
             if (verbose)
-                printf("Header %x, size %d is not a multiples of 8 bytes\n",
+                printf("Header %x, size %d, Alloc b should be odd words\n",
+                      block[0],
+                      words);
+            return -1;
+        } else if (block_free(block) && words % 2 != 0) {
+            if (verbose)
+                printf("Header %x, size %d, free b should be even words\n",
                       block[0],
                       words);
             return -1;
         }
 
-        unsigned int next = block_size(block) + 1;        
-        if (block[next] != block[0]) {
-            if (verbose)
-                printf("Header and footer should be identical\n");
-            return -1;
-        }
+        
 
         //Check coalescing: no two consecutive free blocks in the heap.
         if (block_free(block)) {
@@ -829,11 +889,24 @@ int mm_checkheap(int verbose) {
                            block_size(block));
             }
 
+            unsigned int next = block_size(block) + 1;        
+            if (block[next] != block[0]) {
+                if (verbose)
+                    printf("Header and footer should be identical\n");
+                return -1;
+            }
 
-
-            if (block_free(block_prev(block)) || block_free(block_next(block))) {
+            if (block_prev_free(block) || block_free(block_next(block))) {
                 if (verbose)
                     printf("There should be no consecutive free blocks\n");
+                return -1;
+            }
+        } else {
+            if (block_prev_free(block_next(block)) == 1) {
+                if (verbose) {
+                    printf("The next block's prev_free bit is incorrect\n");
+
+                }
                 return -1;
             }
         }
