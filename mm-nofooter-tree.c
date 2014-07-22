@@ -57,7 +57,7 @@
 #define CHUNKSIZE     65    /* Extend heap by this (1K words, 4K bytes) */
 #define FREE          1      /* Mark prev block as free */
 #define ALLOCATED     0      /* Mark prev block as allocated */
-#define SEG_LIST_SIZE 19     /* The seg list has 14 entries */
+#define SEG_LIST_SIZE 2     /* The seg list has 14 entries */
 #define VERBOSE       0      /* Indicator to print debug info */
 #define ADDRESS       1      /* Operation on address order */
 #define SIZE          0      /* Operation on size order  */
@@ -65,7 +65,7 @@
 /* Private global variable */
 static uint32_t *heap_listp;
 static uint32_t **seg_list;
-static uint32_t *root;
+static uint32_t *seg_root;
 
 /* Function prototypes */ 
 static inline void* align(const void const* p, unsigned char w);
@@ -73,13 +73,14 @@ static inline int aligned(const void const* p);
 static int in_heap(const void* p);
 static inline unsigned int block_size(const uint32_t* block);
 static inline int block_free(const uint32_t* block);
-static inline int block_free(const uint32_t* block);
 static inline void block_mark_free(uint32_t* block, int alloc);
 static inline void block_mark_allo(uint32_t* block, int alloc);
 static inline uint32_t* block_mem(uint32_t* const block);
 static inline uint32_t* block_block(uint32_t* const ptr);
 static inline uint32_t* block_pred(uint32_t* const block);
 static inline uint32_t* block_succ(uint32_t* const block);
+static inline uint32_t* block_left(uint32_t* const block);
+static inline uint32_t* block_right(uint32_t* const block);
 static inline uint32_t* block_prev(uint32_t* const block);
 static inline uint32_t* block_next(uint32_t* const block);
 static inline void set_val(uint32_t* const block, unsigned int val);
@@ -87,12 +88,29 @@ static inline void set_size(uint32_t* const block, unsigned int size) ;
 static inline void set_ptr(uint32_t* const block, 
                           uint32_t* const pred_block, 
                           uint32_t* const succ_block);
+static inline void set_chd_ptr(uint32_t* const block, 
+                          uint32_t* const left, 
+                          uint32_t* const right);
 static inline int find_index(unsigned int words);
-static int in_list(uint32_t* block) ;
+static inline uint32_t * find_root(unsigned int words);
+static int in_list(uint32_t* block);
+static inline int in_size_tree(uint32_t * block, uint32_t * root);
+static inline int in_add_tree(uint32_t * block, uint32_t * root);
 static inline void block_insert(uint32_t* block);
 static inline void block_delete(uint32_t* block);
 static inline uint32_t * put(uint32_t * block, uint32_t * root);
+static inline uint32_t * take(uint32_t * block, uint32_t * root);
+static inline uint32_t * add(uint32_t * block, uint32_t * root);
+static inline uint32_t * del(uint32_t * block, uint32_t * root);
+static inline uint32_t * minimum(uint32_t * block, int order);
+static inline uint32_t * deleteMin(uint32_t * block, int order);
+static inline int cmp_size(uint32_t * this, uint32_t * that);
+static inline int cmp_add(uint32_t * this, uint32_t * that);
+static inline int cmp_uint(unsigned int this, unsigned int that);
 static inline uint32_t * epi_block();
+static int check_size_tree(int verbose, uint32_t * root, int * count);
+static int check_add_tree(int verbose, uint32_t * root, int * count);
+static void printTree(uint32_t * block, int op);
 
 /*    Segregated List 
  * Size(DWORD)    Entry
@@ -246,7 +264,7 @@ static inline uint32_t* block_succ(uint32_t* const block) {
 }
 
 // Return the left child of the given free block
-static inline uint32_t* left(uint32_t* const block) {
+static inline uint32_t* block_left(uint32_t* const block) {
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
     REQUIRES(block_size(block) >= 4);
@@ -263,7 +281,7 @@ static inline uint32_t* left(uint32_t* const block) {
 }
 
 // Return the right child of the given free block
-static inline uint32_t* right(uint32_t* const block) {
+static inline uint32_t* block_right(uint32_t* const block) {
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
     REQUIRES(block_size(block) >= 4);
@@ -359,22 +377,22 @@ static inline void set_chd_ptr(uint32_t* const block,
     unsigned int left_offest; 
     unsigned int right_offest;
 
-    if (pred_block == NULL)
-        pred_offest = 0;
+    if (left == NULL)
+        left_offest = 0;
     else 
-        pred_offest = pred_block - heap_listp;
+        left_offest = left - heap_listp;
 
-    if (succ_block == NULL)
-        succ_offest = 0;
+    if (right == NULL)
+        right_offest = 0;
     else
-        succ_offest = succ_block - heap_listp;
+        right_offest = right - heap_listp;
 
 
     //printf("pred_off = %d, succ_off = %d\n", pred_offest, succ_offest);
     set_val(block + 3 , left_offest);
     set_val(block + 4 , right_offest);
-    ENSURES(left(block) == left);
-    ENSURES(right(block) == right);  
+    ENSURES(block_left(block) == left);
+    ENSURES(block_right(block) == right);  
 }
 
 
@@ -421,24 +439,28 @@ static inline int find_index(unsigned int words) {
         return 18;
 }
 
+static inline uint32_t * find_root(unsigned int words) {
+    
+    if (words == 2) 
+        return seg_list[0];
+    else if (words == 4)
+        return seg_list[1];
+    else
+        return seg_root;
+}
+
 // Return whether the pointer is in the seg list.
 static int in_list(uint32_t* block) {
-    uint32_t *pred = block_pred(block);
-    uint32_t *succ = block_succ(block);
-    int index = find_index(block_size(block));
-
-    if (pred == NULL && succ == NULL) { 
-        // The list has only one block
-        return seg_list[index] == block;
-    } else if (pred == NULL && succ != NULL) {
-        // This block is at the head, seg_list[index] == block
-        return seg_list[index] == block && block_pred(succ) == block;
-    } else if (pred != NULL && succ == NULL) {
-        // This block is at the tail
-        return block_succ(pred) == block;
-    } else {
-        // This block is the middle of somewhere
-        return block_succ(pred) == block && block_pred(succ) == block;
+    unsigned int size = block_size(block);
+    uint32_t * root;
+    root = find_root(size);
+    
+    switch (size) {
+        case 2:
+        case 4: 
+            return in_add_tree(block, root);
+        default:
+            return in_size_tree(block, root);
     }
 }
 
@@ -447,22 +469,22 @@ static inline void block_insert(uint32_t* block) {
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
 
-    int index = find_index(block_size(block));
+    unsigned int size = block_size(block);
+    uint32_t * root;
     //printf("index = %d, size = %d\n", index, block_size(block));
-    uint32_t *old_block = seg_list[index];
-
-    if (old_block == NULL) { // this list is empty
-        set_ptr(block, NULL, NULL);
-        seg_list[index] = block;
-    } else {                 // this list is not empty
-        ENSURES(block_pred(old_block) == NULL);
-        ENSURES(block_succ(old_block) == NULL || in_heap(block_succ(old_block)));
-
-        set_ptr(old_block, block, block_succ(old_block));
-        set_ptr(block, NULL, old_block);
-        seg_list[index] = block;
+    root = find_root(size);
+    
+    switch (size) {
+        case 2:
+            seg_list[0] = add(block, root);
+            break;
+        case 4: 
+            seg_list[1] = add(block, root); 
+            break;
+        default:
+            seg_root = put(block, seg_root);
     }
-    ENSURES(in_list(block));
+    
 }
 
 // Delete the given block from the seg list
@@ -471,40 +493,40 @@ static inline void block_delete(uint32_t* block) {
     REQUIRES(in_heap(block));
 
 
-    uint32_t *pred = block_pred(block);
-    uint32_t *succ = block_succ(block);
-    int index = find_index(block_size(block));
+    unsigned int size = block_size(block);
+    uint32_t * root;
+    root = find_root(size);
 
-    if (pred == NULL && succ == NULL) { 
-        // The list has only one block
-        seg_list[index] = NULL;
-    } else if (pred == NULL && succ != NULL) {
-        // This block is at the head, seg_list[index] == block
-        set_ptr(succ, NULL, block_succ(succ));
-        seg_list[index] = succ;
-    } else if (pred != NULL && succ == NULL) {
-        // This block is at the tail
-        set_ptr(pred, block_pred(pred), NULL);
-    } else {
-        // This block is the middle of somewhere
-        set_ptr(pred, block_pred(pred), succ);
-        set_ptr(succ, pred, block_succ(succ));
+    switch (size) {
+        case 2:
+            seg_list[0] = del(block, root);
+            break;
+        case 4: 
+            seg_list[1] = del(block, root); 
+            break;
+        default:
+            seg_root = take(block, seg_root);
     }
 }
 
+/* Add given block, first finding the aim tree of the size of 
+ * given block, all trees are arranged by the size order of blocks
+ * in the tree
+ */
 static inline uint32_t * put(uint32_t * block, uint32_t * root) {
     if (root == NULL) {
-        set_ptr(block, NULL, NULL)
-        set_chd_ptr(block, NULL, NULL);
+        set_ptr(block, NULL, NULL);
+        if (block_size(block) >= 4)
+            set_chd_ptr(block, NULL, NULL);
         return block;
     }
 
     int cmp = cmp_size(block, root);
 
     if (cmp > 0) 
-        set_chd_ptr(root, left(root), put(block, right(root)));
+        set_chd_ptr(root, block_left(root), put(block, block_right(root)));
     else if (cmp < 0) 
-        set_chd_ptr(root, put(block, left(root)), right(root));
+        set_chd_ptr(root, put(block, block_left(root)), block_right(root));
     else {
         /* At this point, root is the ptr of the first blk of the same size 
          * we add blk into this address ordered tree */
@@ -513,21 +535,37 @@ static inline uint32_t * put(uint32_t * block, uint32_t * root) {
     return root;
 }
 
-static inline uint32_t * del(uint32_t * block, uint32_t * root) {
+/* Delete given block, first finding the aim tree of the size of 
+ * given block, all trees are arranged by the size order of blocks
+ * in the tree
+ */
+static inline uint32_t * take(uint32_t * block, uint32_t * root) {
     if (root == NULL) return NULL;
 
     int cmp = cmp_size(block, root);
 
     if (cmp < 0)
-        set_ptr(root, del(block, block_pred(root)), block_succ(root));
+        set_chd_ptr(root, take(block, block_left(root)), block_right(root));
     else if (cmp > 0)
-        set_ptr(root, block_pred(root), del(block, block_succ(root)));
+        set_chd_ptr(root, block_left(root), take(block, block_right(root)));
     else {
         /* At this point, root is the ptr of the first blk of the same size 
          * we del blk from this address ordered tree */
-        root = take(block, root);
+        root = del(block, root);
+        if (root == NULL) {
+            if (block_right(block) == NULL) {
+                root = block_left(block);
+            } else if (block_left(block) == NULL) {
+                root = block_right(block);
+            } else {
+            uint32_t * t = block;
+            block = minimum(block_right(block), SIZE);
+            set_chd_ptr(block, block_left(t), deleteMin(block_right(t), SIZE));
+            root = block;
+            }
+        }
     }
-
+    return root;
 }
 
 /* Add given block to given tree, the given tree contains blocks of the 
@@ -536,6 +574,8 @@ static inline uint32_t * del(uint32_t * block, uint32_t * root) {
 static inline uint32_t * add(uint32_t * block, uint32_t * root) {
     if (root == NULL) {
         set_ptr(block, NULL, NULL);
+        if (block_size(block) >= 4)
+            set_chd_ptr(block, NULL, NULL);
         return block;
     }
 
@@ -552,23 +592,35 @@ static inline uint32_t * add(uint32_t * block, uint32_t * root) {
 /* Delete given block from given tree, the given tree contains blocks of the 
  * same size, arranges by the address order of blocks
  */
-static inline uint32_t * take(uint32_t * block, uint32_t * root) {
+static inline uint32_t * del(uint32_t * block, uint32_t * root) {
     if (root == NULL) return NULL;
 
     int cmp = cmp_add(block, root);
-    ENSURES(cmp != 0);
+    uint32_t * t;
 
-    if (cmp > 0) 
-        set_ptr(root, block_pred(root), take(block, block_succ(root)));
+    if (cmp > 0)
+        set_ptr(root, block_pred(root), del(block, block_succ(root)));
     else if (cmp < 0)
-        set_ptr(root, take(block, block_pred(root)), block_succ(root));
+        set_ptr(root, del(block, block_pred(root)), block_succ(root));
     else {
         ENSURES(block == root);
-        if (block_succ(root) == NULL) return block_pred(root);
-        if (block_pred(root) == NULL) return block_succ(root);
-        uint32_t * t = root;
+        if (block_succ(root) == NULL) {
+            t = block_pred(root);
+            if (t != NULL && block_size(block) >= 4)
+                set_chd_ptr(t, block_left(block), block_right(block));
+            return t;
+        }
+        if (block_pred(root) == NULL) {
+            t = block_succ(root);    
+            if (block_size(block) >= 4)               
+                set_chd_ptr(t, block_left(block), block_right(block));
+            return t;
+        }
+        t = root;
         root = minimum(block_succ(root), ADDRESS);
         set_ptr(root, block_pred(t), deleteMin(block_succ(t), ADDRESS));
+        if (block_size(t) >= 4)
+            set_chd_ptr(root, block_left(t), block_right(t));
     }
     return root;
 }
@@ -576,39 +628,101 @@ static inline uint32_t * take(uint32_t * block, uint32_t * root) {
 /* Retrun the minimun block of from given tree, according to given order
  */
 static inline uint32_t * minimum(uint32_t * block, int order) {
-    switch (order) {
-        case ADDRESS:
-            if (block_pred(block) == NULL)
-                return block;
-            else
-                return minimum(block, ADDRESS);
-        case SIZE:
-            if (left(block) == NULL)
-                return block;
-            else
-                return minimum(block, SIZE);
+    if (order == ADDRESS) {
+        if (block_pred(block) == NULL)
+            return block;
+        else
+            return minimum(block_pred(block), ADDRESS);
+    } else {
+        if (block_left(block) == NULL)
+            return block;
+        else
+            return minimum(block_left(block), SIZE);
     }
 }
 
-/* Delete the minimun block of from given tree, according to given order
+static inline uint32_t * ceiling (unsigned int words, uint32_t * root) {
+    if (words <= 2){
+        if (seg_list[0] != NULL)
+            return seg_list[0];
+        else 
+            return ceiling(4, root);
+    }
+    else if (words <= 4) {
+        if (seg_list[1] != NULL)
+            return seg_list[1];
+        else 
+            return ceiling(6, root);
+    }
+    else {
+        if (root == NULL)
+            return NULL;
+        int cmp = cmp_uint(words, block_size(root));
+        if (cmp == 0) return root;
+        if (cmp > 0) return ceiling(words, block_right(root));
+        uint32_t * t = ceiling(words, block_left(root));
+        if (t != NULL) 
+            return t;
+        else 
+            return root;        
+    }
+}
+
+
+
+/* Delete the minimun block from given tree, according to given order
  */
 static inline uint32_t * deleteMin(uint32_t * block, int order) {
-    switch (order) {
-        case ADDRESS:
-            if (block_pred(block) == NULL)
-                return block_succ(block);
-            else {
-                set_ptr(block, deleteMin(block, ADDRESS), block_succ(block));
-                return block;
-            }
-        case SIZE:
-            if (left(block) == NULL)
-                return right(block);
-            else {
-                set_chd_ptr(block, deleteMin(block, SIZE), right(block));
-                return block;
-            }
+    uint32_t * t;
+    if (order == ADDRESS) {
+        if (block_pred(block) == NULL) {
+            if ((t = block_succ(block)) != NULL && block_size(block) >= 4)
+                set_chd_ptr(t, block_left(block), block_right(block));
+            return t;
+        } else {
+            set_ptr(block, deleteMin(block_pred(block), ADDRESS), block_succ(block));
+            return block;
+        }
+    } else {
+        if (block_left(block) == NULL)
+            return block_right(block);
+        else {
+            set_chd_ptr(block, deleteMin(block_left(block), SIZE), block_right(block));
+            return block;
+        }
     }
+}
+
+/* Return if given blk in the whole tree
+ * Return:  1 on in tree
+ *          0 on not in tree
+ */
+static inline int in_size_tree(uint32_t * block, uint32_t * root) {
+    if (root == NULL) return 0;
+    int cmp = cmp_size(block, root);
+
+    if (cmp == 1)
+        return in_size_tree(block, block_right(root));
+    else if (cmp == -1)
+        return in_size_tree(block, block_left(root));
+    else 
+        return in_add_tree  (block, root);
+}
+
+/* Return if given blk in the address-ordered tree
+ * Return:  1 on in tree
+ *          0 on not in tree
+ */
+static inline int in_add_tree(uint32_t * block, uint32_t * root) {
+    if (root == NULL) return 0;
+    int cmp = cmp_add(block, root);
+
+    if (cmp == 1)
+        return in_add_tree(block, block_succ(root));
+    else if (cmp == -1)
+        return in_size_tree(block, block_pred(root));
+    else 
+        return 1;
 }
 
 /* Compare the size of two given blocks
@@ -635,6 +749,20 @@ static inline int cmp_size(uint32_t * this, uint32_t * that) {
  */
 static inline int cmp_add(uint32_t * this, uint32_t * that) {
 
+    if (this > that)
+        return 1;
+    else if (this < that) 
+        return -1;
+    else
+        return 0;
+}
+
+/* Compare the value of two given uints
+ * Return:  1, if the 1st one is greater
+ *         -1, if the 2nd one is greater
+ *          0, if two are equal
+ */
+static inline int cmp_uint(unsigned int this, unsigned int that) {
     if (this > that)
         return 1;
     else if (this < that) 
@@ -771,31 +899,12 @@ static void *find_fit(unsigned int awords) {
     REQUIRES(awords % 2 == 0);
 
     uint32_t *block = NULL;
-    uint32_t *res = block;
-    int found = 0;
-    unsigned int words = 1 << 31;
-    unsigned int thiswords = 0;
-    int index = find_index(awords);
 
-    for (int i = index; i < SEG_LIST_SIZE; ++i) {
-        //printf("index in finding = %d\n", i);        
-        if (seg_list[i] == NULL)
-            continue;
-        for (block = seg_list[i]; block != NULL; block = block_succ(block)) {
-            thiswords = block_size(block);
-            if (thiswords >= awords) {
-                if (thiswords < words) {
-                    res = block;
-                    words = thiswords;
-                }
-                found = 1;
-                //return block;
-            }
-        }
-        if (found) 
-            break;
-    }
-    return res;
+    block = ceiling(awords, seg_root);
+    if (block == NULL)
+        return NULL;
+    else
+        return minimum(block, ADDRESS);
  }
 
 /*
@@ -803,7 +912,7 @@ static void *find_fit(unsigned int awords) {
  * Return: Nothing
  */
 static void place(void *block, unsigned int awords) {
-
+  
     REQUIRES(block != NULL);
     REQUIRES(in_heap(block));
     REQUIRES(in_list(block));
@@ -834,7 +943,8 @@ static void place(void *block, unsigned int awords) {
         block = block_next(block);
         ENSURES(!block_free(block));
         block_mark_allo(block, ALLOCATED);
-    }    
+    }
+     checkheap(1);         
  }
 
 /*
@@ -853,6 +963,8 @@ int mm_init(void) {
     for (int i = 0; i < SEG_LIST_SIZE; ++i) {
         seg_list[i] = NULL;
     }
+    seg_root = NULL;
+
 
     if ((heap_listp = mem_sbrk(2 * WSIZE)) == (void *)-1)
         return -1;
@@ -1153,7 +1265,9 @@ int mm_checkheap(int verbose) {
             count_iter++;
             if (!in_list(block)) {
                 if (verbose)
-                    printf("This free block is in heap but not in list, size = %d\n",
+                    printf("This free block is in heap but not in list"
+                        ", %p, size = %d\n",
+                           (void *)block,
                            block_size(block));
             }
 
@@ -1190,46 +1304,13 @@ int mm_checkheap(int verbose) {
         if (seg_list[i] == NULL)
             continue;
 
-        for (block = seg_list[i]; block != NULL; block = block_succ(block)) {
-            count_list++;
-            
-            /*All next/previous pointers are consistent 
-             * (if A’s next pointer points to B, B’s previous pointer
-             * should point to A). */
-            uint32_t *pred = block_pred(block);
-            uint32_t *succ = block_succ(block);
-            if (pred != NULL) {
-                if (block != block_succ(pred)) {
-                    if (verbose)
-                        printf("List pointer is not consistent\n");
-                    return -1;
-                }
-            }
-
-            if (succ != NULL) {
-                if (block != block_pred(succ)) {
-                    if (verbose)
-                        printf("List pointer is not consistent\n");
-                    return -1;
-                }
-            }
-
-            //All free list pointers points between mem heap lo() and hi()
-            if (!in_heap(block)) {
-                if (verbose)
-                    printf("Block isn't in heap\n");
-                return -1;
-            }
-
-            //All blocks in each list bucket fall within bucket size range
-            if (find_index(block_size(block)) != i) {
-                if (verbose)
-                    printf("Blocks size should fall within bucket size range\n");
-                return -1;                    
-            }            
-        }
+        if (check_add_tree(verbose, seg_list[i], &count_list) == -1)
+            return -1;
     }
 
+
+    if (check_size_tree(verbose, seg_root, &count_list) == -1)
+        return -1;
     /* Count free blocks by iterating through every block and 
      * traversing free list by pointers and see if they match. */
     //dbg_printf("Number of free blocks should be the same, "
@@ -1239,8 +1320,108 @@ int mm_checkheap(int verbose) {
         if (verbose)
             printf("Number of free blocks should be the same, "
                    "iter = %d, list = %d;\n", count_iter, count_list);
-        return -1;                    
+        //return -1;                    
     }
 
     return 0;
 }
+
+//Check the size-ordered tree
+//Returns 0 if no errors were found, otherwise returns the error
+static int check_size_tree(int verbose, uint32_t * root, int * count) {
+    if (root == NULL) return 0;
+
+    uint32_t * left = block_left(root);
+    uint32_t * right = block_right(root);
+
+
+    if (check_add_tree(verbose, root, count) == -1)
+        return -1;
+
+    if (left != NULL) {
+        if (block_size(left) >= block_size(root)) {
+            if (verbose)
+                printf("The size of the left child should be less than root");
+            return -1;                    
+        }
+
+
+        if (check_size_tree(verbose, left, count) == -1)
+            return -1;
+    }
+
+    if (right != NULL) {
+        if (block_size(right) <= block_size(root)) {
+            if (verbose)
+                printf("The size of the right child should be "
+                    "greater than root");
+            return -1;                    
+        }
+
+
+        if (check_size_tree(verbose, right, count) == -1)
+            return -1;
+    }
+    return 0; // All good
+}
+
+//Check the address-ordered tree 
+//Returns 0 if no errors were found, otherwise returns the error
+static int check_add_tree(int verbose, uint32_t * root, int * count) {
+    if (root == NULL) return 0;
+    //printf("Free block in list: %p\n", (void *)root);
+    *count += 1;
+    uint32_t * left = block_pred(root);
+    uint32_t * right = block_succ(root);
+
+    if (left != NULL) {
+        if (left >= root) {
+            if (verbose)
+                printf("The address of the left child should be "
+                    "less than root");
+            return -1;                    
+        }
+        if (block_size(left) != block_size(root)) {
+            if (verbose)
+                printf("The size of blk in the same add tree should be "
+                    "the same");
+            return -1;                    
+        }
+
+        if (check_add_tree(verbose, left, count) == -1)
+            return -1;
+    }
+
+    if (right != NULL) {
+        if (right <= root) {
+            if (verbose)
+                printf("The address of the right child should be "
+                    "greater than root");
+            return -1;                    
+        }
+        if (block_size(right) != block_size(root)) {
+            if (verbose)
+                printf("The size of blk in the same add tree should be "
+                    "the same");
+            return -1;                    
+        }
+
+        if (check_add_tree(verbose, right, count) == -1)
+            return -1;
+    }
+    return 0; // All good
+
+}
+
+static void printTree(uint32_t * block, int op) { 
+    if (block == NULL) return;
+    if (op == ADDRESS)
+        printTree(block_pred(block), op);
+    else
+        printTree(block_left(block), op);
+    printf("%p ", (void *)block); 
+    if (op == ADDRESS)
+        printTree(block_succ(block), op);
+    else
+        printTree(block_right(block), op);
+} 
