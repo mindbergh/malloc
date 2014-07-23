@@ -57,7 +57,7 @@
 #define CHUNKSIZE     65    /* Extend heap by this (1K words, 4K bytes) */
 #define FREE          1      /* Mark prev block as free */
 #define ALLOCATED     0      /* Mark prev block as allocated */
-#define SEG_LIST_SIZE 2     /* The seg list has 14 entries */
+#define SEG_LIST_SIZE 6     /* The seg list has 14 entries */
 #define VERBOSE       0      /* Indicator to print debug info */
 #define ADDRESS       1      /* Operation on address order */
 #define SIZE          0      /* Operation on size order  */
@@ -92,12 +92,17 @@ static inline void set_chd_ptr(uint32_t* const block,
                           uint32_t* const left, 
                           uint32_t* const right);
 static inline int find_index(unsigned int words);
+static void *find_fit(unsigned int awords);
+static void *small_find_fit(unsigned int awords);
 static inline uint32_t * find_root(unsigned int words);
-static int in_list(uint32_t* block);
+static inline int in_list(uint32_t* block);
+static inline int small_in_list(uint32_t* block);
 static inline int in_size_tree(uint32_t * block, uint32_t * root);
 static inline int in_add_tree(uint32_t * block, uint32_t * root);
 static inline void block_insert(uint32_t* block);
 static inline void block_delete(uint32_t* block);
+static inline void small_block_insert(uint32_t* block);
+static inline void small_block_delete(uint32_t* block);
 static inline uint32_t * put(uint32_t * block, uint32_t * root);
 static inline uint32_t * take(uint32_t * block, uint32_t * root);
 static inline uint32_t * add(uint32_t * block, uint32_t * root);
@@ -398,45 +403,7 @@ static inline void set_chd_ptr(uint32_t* const block,
 
 // Return the index to the segregated list according to given words size
 static inline int find_index(unsigned int words) {
-
-    if (words == 2) 
-        return 0;
-    else if (words == 4)
-        return 1;
-    else if(words >= 6 && words <= 8)
-        return 2; 
-    else if(words >= 10 && words <= 16)
-        return 3;     
-    else if(words >= 18 && words <= 32)
-        return 4;
-    else if(words >= 34 && words <= 64)
-        return 5;
-    else if(words >= 66 && words <= 128)
-        return 6;
-    else if(words >= 130 && words <= 256)
-        return 7;
-    else if(words >= 258 && words <= 512)
-        return 8;
-    else if(words >= 514 && words <= 1024)
-        return 9;
-    else if(words >= 1026 && words <= 2048)
-        return 10;
-    else if(words >= 2050 && words <= 4096)
-        return 11;
-    else if(words >= 4098 && words <= 8192)
-        return 12;
-    else if(words >= 8194 && words <= 16384)
-        return 13;
-    else if(words >= 16386 && words <= 32768)
-        return 14;
-    else if(words >= 32770 && words <= 65536)
-        return 15;
-    else if(words >= 65538 && words <= 131072)
-        return 16;
-    else if(words >= 131072 && words <= 262144)
-        return 17;
-    else
-        return 18;
+    return (words - 2) / 2;
 }
 
 static inline uint32_t * find_root(unsigned int words) {
@@ -450,17 +417,32 @@ static inline uint32_t * find_root(unsigned int words) {
 }
 
 // Return whether the pointer is in the seg list.
-static int in_list(uint32_t* block) {
-    unsigned int size = block_size(block);
-    uint32_t * root;
-    root = find_root(size);
+static int in_list(uint32_t* block) {    
+    if (block_size(block) <= SEG_LIST_SIZE * 2)
+        return small_in_list(block);
+    else
+        return in_size_tree(block, find_root(block_size(block)));
     
-    switch (size) {
-        case 2:
-        case 4: 
-            return in_add_tree(block, root);
-        default:
-            return in_size_tree(block, root);
+}
+
+// Return whether the pointer is in the seg list.
+static int small_in_list(uint32_t* block) {
+    uint32_t *pred = block_pred(block);
+    uint32_t *succ = block_succ(block);
+    int index = find_index(block_size(block));
+
+    if (pred == NULL && succ == NULL) { 
+        // The list has only one block
+        return seg_list[index] == block;
+    } else if (pred == NULL && succ != NULL) {
+        // This block is at the head, seg_list[index] == block
+        return seg_list[index] == block && block_pred(succ) == block;
+    } else if (pred != NULL && succ == NULL) {
+        // This block is at the tail
+        return block_succ(pred) == block;
+    } else {
+        // This block is the middle of somewhere
+        return block_succ(pred) == block && block_pred(succ) == block;
     }
 }
 
@@ -470,16 +452,10 @@ static inline void block_insert(uint32_t* block) {
     REQUIRES(in_heap(block));
     
     
-    switch (size) {
-        case 2:
-            seg_list[0] = add(block, find_root(block_size(block)));
-            break;
-        case 4: 
-            seg_list[1] = add(block, find_root(block_size(block))) 
-            break;
-        default:
-            seg_root = put(block, seg_root);
-    }
+    if (block_size(block) <= SEG_LIST_SIZE * 2)
+        small_block_insert(block);
+    else
+        seg_root = put(block, seg_root);
     
 }
 
@@ -489,22 +465,61 @@ static inline void block_delete(uint32_t* block) {
     REQUIRES(in_heap(block));
 
 
-    unsigned int size = block_size(block);
-    uint32_t * root;
-    root = find_root(size);
-
-    switch (size) {
-        case 2:
-            seg_list[0] = del(block, root);
-            break;
-        case 4: 
-            seg_list[1] = del(block, root); 
-            break;
-        default:
-            seg_root = take(block, seg_root);
-    }
+    if (block_size(block) <= SEG_LIST_SIZE * 2)
+        small_block_delete(block);
+    else
+        seg_root = take(block, seg_root);
 }
 
+
+static inline void small_block_insert(uint32_t* block) {
+    REQUIRES(block != NULL);
+    REQUIRES(in_heap(block));
+
+    int index = find_index(block_size(block));
+    //printf("index = %d, size = %d\n", index, block_size(block));
+    uint32_t *old_block = seg_list[index];
+
+    if (old_block == NULL) { // this list is empty
+        set_ptr(block, NULL, NULL);
+        seg_list[index] = block;
+    } else {                 // this list is not empty
+        ENSURES(block_pred(old_block) == NULL);
+        ENSURES(block_succ(old_block) == NULL || in_heap(block_succ(old_block)));
+
+        set_ptr(old_block, block, block_succ(old_block));
+        set_ptr(block, NULL, old_block);
+        seg_list[index] = block;
+    }
+    ENSURES(in_list(block));
+}
+
+// Delete the given block from the seg list
+static inline void small_block_delete(uint32_t* block) {
+    REQUIRES(block != NULL);
+    REQUIRES(in_heap(block));
+
+
+    uint32_t *pred = block_pred(block);
+    uint32_t *succ = block_succ(block);
+    int index = find_index(block_size(block));
+
+    if (pred == NULL && succ == NULL) { 
+        // The list has only one block
+        seg_list[index] = NULL;
+    } else if (pred == NULL && succ != NULL) {
+        // This block is at the head, seg_list[index] == block
+        set_ptr(succ, NULL, block_succ(succ));
+        seg_list[index] = succ;
+    } else if (pred != NULL && succ == NULL) {
+        // This block is at the tail
+        set_ptr(pred, block_pred(pred), NULL);
+    } else {
+        // This block is the middle of somewhere
+        set_ptr(pred, block_pred(pred), succ);
+        set_ptr(succ, pred, block_succ(succ));
+    }
+}
 /* Add given block, first finding the aim tree of the size of 
  * given block, all trees are arranged by the size order of blocks
  * in the tree
@@ -638,30 +653,22 @@ static inline uint32_t * minimum(uint32_t * block, int order) {
 }
 
 static inline uint32_t * ceiling (unsigned int words, uint32_t * root) {
-    if (words <= 2){
-        if (seg_list[0] != NULL)
-            return seg_list[0];
-        else 
-            return ceiling(4, root);
-    }
-    else if (words <= 4) {
-        if (seg_list[1] != NULL)
-            return seg_list[1];
-        else 
-            return ceiling(6, root);
-    }
-    else {
-        if (root == NULL)
-            return NULL;
-        int cmp = cmp_uint(words, block_size(root));
-        if (cmp == 0) return root;
-        if (cmp > 0) return ceiling(words, block_right(root));
-        uint32_t * t = ceiling(words, block_left(root));
-        if (t != NULL) 
-            return t;
-        else 
-            return root;        
-    }
+    uint32_t * res = NULL;
+    if (words <= SEG_LIST_SIZE * 2) {
+        if ((res = small_find_fit(words)) != NULL)
+            return res;
+    } 
+    if (root == NULL)
+        return NULL;
+    int cmp = cmp_uint(words, block_size(root));
+    if (cmp == 0) return root;
+    if (cmp > 0) return ceiling(words, block_right(root));
+    uint32_t * t = ceiling(words, block_left(root));
+    if (t != NULL) 
+        return t;
+    else 
+        return root;
+    
 }
 
 
@@ -901,8 +908,32 @@ static void *find_fit(unsigned int awords) {
         return NULL;
     else
         return minimum(block, ADDRESS);
+    
  }
 
+/*
+ * Find the fit using first fit search
+ * Return: the pointer to the found free block 
+ *         NULL on no matching.
+ */
+static void *small_find_fit(unsigned int awords) {
+    REQUIRES(awords >= 2);
+    REQUIRES(awords % 2 == 0);
+
+    uint32_t *block;
+    int index = find_index(awords);
+
+    for (int i = index; i < SEG_LIST_SIZE; ++i) {
+        //printf("index in finding = %d\n", i);        
+        if (seg_list[i] == NULL)
+            continue;
+        for (block = seg_list[i]; block != NULL; block = block_succ(block)) {
+            if (block_size(block) >= awords)
+                return block;
+        }
+    }
+    return NULL;
+ }
 /*
  * Place the block and potentially split the block
  * Return: Nothing
@@ -1299,9 +1330,44 @@ int mm_checkheap(int verbose) {
     for (int i = 0; i < SEG_LIST_SIZE; ++i) {        
         if (seg_list[i] == NULL)
             continue;
+        for (block = seg_list[i]; block != NULL; block = block_succ(block)) {
+            count_list++;
+            
+            /*All next/previous pointers are consistent 
+             * (if A’s next pointer points to B, B’s previous pointer
+             * should point to A). */
+            uint32_t *pred = block_pred(block);
+            uint32_t *succ = block_succ(block);
+            if (pred != NULL) {
+                if (block != block_succ(pred)) {
+                    if (verbose)
+                        printf("List pointer is not consistent\n");
+                    return -1;
+                }
+            }
 
-        if (check_add_tree(verbose, seg_list[i], &count_list) == -1)
-            return -1;
+            if (succ != NULL) {
+                if (block != block_pred(succ)) {
+                    if (verbose)
+                        printf("List pointer is not consistent\n");
+                    return -1;
+                }
+            }
+
+            //All free list pointers points between mem heap lo() and hi()
+            if (!in_heap(block)) {
+                if (verbose)
+                    printf("Block isn't in heap\n");
+                return -1;
+            }
+
+            //All blocks in each list bucket fall within bucket size range
+            if (find_index(block_size(block)) != i) {
+                if (verbose)
+                    printf("Blocks size should fall within bucket size range\n");
+                return -1;
+            }
+        }
     }
 
 
