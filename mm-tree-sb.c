@@ -54,7 +54,7 @@
 /* Basic constants */
 #define WSIZE         4      /* Word and header/footer size (bytes) */
 #define DSIZE         8      /* Double word size (bytes) */
-#define CHUNKSIZE     65    /* Extend heap by this (1K words, 4K bytes) */
+#define CHUNKSIZE     129    /* Extend heap by this (1K words, 4K bytes) */
 #define FREE          1      /* Mark prev block as free */
 #define ALLOCATED     0      /* Mark prev block as allocated */
 #define SEG_LIST_SIZE 6     /* The seg list has 14 entries */
@@ -1046,7 +1046,7 @@ void *malloc (size_t size) {
     else if (0)
         ewords = awords;
     else
-        ewords = awords;
+        ewords = CHUNKSIZE;
 
     if (block_prev_free(epi)) {
         unsigned int last_size = block_size(block_prev(epi));

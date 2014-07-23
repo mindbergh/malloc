@@ -54,7 +54,7 @@
 /* Basic constants */
 #define WSIZE         4      /* Word and header/footer size (bytes) */
 #define DSIZE         8      /* Double word size (bytes) */
-#define CHUNKSIZE     65    /* Extend heap by this (1K words, 4K bytes) */
+#define CHUNKSIZE     129    /* Extend heap by this (1K words, 4K bytes) */
 #define FREE          1      /* Mark prev block as free */
 #define ALLOCATED     0      /* Mark prev block as allocated */
 #define SEG_LIST_SIZE 19     /* The seg list has 14 entries */
@@ -525,11 +525,7 @@ static void *find_fit(unsigned int awords) {
     REQUIRES(awords >= 2);
     REQUIRES(awords % 2 == 0);
 
-    uint32_t *block = NULL;
-    uint32_t *res = block;
-    int found = 0;
-    unsigned int words = 1 << 31;
-    unsigned int thiswords = 0;
+    uint32_t *block;
     int index = find_index(awords);
 
     for (int i = index; i < SEG_LIST_SIZE; ++i) {
@@ -537,20 +533,11 @@ static void *find_fit(unsigned int awords) {
         if (seg_list[i] == NULL)
             continue;
         for (block = seg_list[i]; block != NULL; block = block_succ(block)) {
-            thiswords = block_size(block);
-            if (thiswords >= awords) {
-                if (thiswords < words) {
-                    res = block;
-                    words = thiswords;
-                }
-                found = 1;
-                //return block;
-            }
+            if (block_size(block) >= awords)
+                return block;
         }
-        if (found) 
-            break;
     }
-    return res;
+    return NULL;
  }
 
 /*
@@ -667,7 +654,7 @@ void *malloc (size_t size) {
     else if (0)
         ewords = awords;
     else
-        ewords = awords;
+        ewords = CHUNKSIZE;
 
     if (block_prev_free(epi)) {
         unsigned int last_size = block_size(block_prev(epi));
