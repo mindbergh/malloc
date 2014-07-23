@@ -54,10 +54,11 @@
 /* Basic constants */
 #define WSIZE         4      /* Word and header/footer size (bytes) */
 #define DSIZE         8      /* Double word size (bytes) */
-#define CHUNKSIZE     67    /* Extend heap by this (1K words, 4K bytes) */
+#define INITIAL       291
+#define CHUNKSIZE     201    /* Extend heap by this (1K words, 4K bytes) */
 #define FREE          1      /* Mark prev block as free */
 #define ALLOCATED     0      /* Mark prev block as allocated */
-#define SEG_LIST_SIZE 6     /* The seg list has 14 entries */
+#define SEG_LIST_SIZE 4     /* The seg list has 14 entries */
 #define VERBOSE       0      /* Indicator to print debug info */
 #define ADDRESS       1      /* Operation on address order */
 #define SIZE          0      /* Operation on size order  */
@@ -999,7 +1000,7 @@ int mm_init(void) {
     
     /* Extend the empty heap with a free block of CHUNKSIZE bytes
      * extend_heap would ask for 2 more words */
-    if (extend_heap(297) == NULL)
+    if (extend_heap(INITIAL) == NULL)
         return -1;
     return 0;
 }
