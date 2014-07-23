@@ -590,49 +590,44 @@ static inline uint32_t * add(uint32_t * block, uint32_t * root) {
         return block;
     }
 
-    int cmp = cmp_add(block, root);
-    ENSURES(cmp != 0);
-
-    if (cmp > 0) 
-        set_ptr(root, block_pred(root), add(block, block_succ(root)));
-    else 
-        set_ptr(root, add(block, block_pred(root)), block_succ(root));
-    return root;
+    ENSURES(block_pred(root) == NULL);
+    ENSURES(block_succ(root) == NULL || in_heap(block_succ(root)));
+    set_ptr(block, NULL, root);
+    set_ptr(root, block, block_succ(root));
+    if (block_size(block) >= 4)
+        set_chd_ptr(block, block_left(root), block_right(root));
+    return block;
 }
 
 /* Delete given block from given tree, the given tree contains blocks of the 
  * same size, arranges by the address order of blocks
  */
 static inline uint32_t * del(uint32_t * block, uint32_t * root) {
-    if (root == NULL) return NULL;
+    REQUIRES(block != NULL);
+    REQUIRES(in_heap(block));
 
-    int cmp = cmp_add(block, root);
-    uint32_t * t;
 
-    if (cmp > 0)
-        set_ptr(root, block_pred(root), del(block, block_succ(root)));
-    else if (cmp < 0)
-        set_ptr(root, del(block, block_pred(root)), block_succ(root));
-    else {
-        ENSURES(block == root);
-        if (block_succ(root) == NULL) {
-            t = block_pred(root);
-            if (t != NULL && block_size(block) >= 4)
-                set_chd_ptr(t, block_left(block), block_right(block));
-            return t;
-        }
-        if (block_pred(root) == NULL) {
-            t = block_succ(root);    
-            if (block_size(block) >= 4)               
-                set_chd_ptr(t, block_left(block), block_right(block));
-            return t;
-        }
-        t = root;
-        root = minimum(block_succ(root), ADDRESS);
-        set_ptr(root, block_pred(t), deleteMin(block_succ(t), ADDRESS));
-        if (block_size(t) >= 4)
-            set_chd_ptr(root, block_left(t), block_right(t));
+    uint32_t *pred = block_pred(block);
+    uint32_t *succ = block_succ(block);
+
+    if (pred == NULL && succ == NULL) { 
+        // The list has only one block
+        root = NULL;
+    } else if (pred == NULL && succ != NULL) {
+        // This block is at the head, seg_list[index] == block
+        set_ptr(succ, NULL, block_succ(succ));
+        set_chd_ptr(succ, block_left(block), block_right(block));
+        root = succ;
+    } else if (pred != NULL && succ == NULL) {
+        // This block is at the tail
+        set_ptr(pred, block_pred(pred), NULL);
+    } else {
+        // This block is the middle of somewhere
+        set_ptr(pred, block_pred(pred), succ);
+        set_ptr(succ, pred, block_succ(succ));
     }
+
+   
     return root;
 }
 
